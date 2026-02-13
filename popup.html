@@ -156,32 +156,6 @@
             border: 1px solid #bee5eb;
         }
 
-        .stats {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 15px;
-        }
-
-        .stat-item {
-            background: #f8f9fa;
-            padding: 10px;
-            border-radius: 6px;
-            text-align: center;
-        }
-
-        .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #667eea;
-        }
-
-        .stat-label {
-            font-size: 12px;
-            color: #666;
-            margin-top: 5px;
-        }
-
         .progress-bar {
             width: 100%;
             height: 8px;
@@ -386,7 +360,7 @@
         <div class="tab-buttons">
             <button class="tab-btn active" data-tab="current">当前页面</button>
             <button class="tab-btn" data-tab="custom">指定URL</button>
-            <button class="tab-btn" data-tab="network">Network监听</button>
+            <button class="tab-btn" data-tab="network">网络监听</button>
         </div>
 
         <div id="currentTab" class="tab-content active">
@@ -484,7 +458,7 @@
 
         <div id="networkTab" class="tab-content">
             <div class="section">
-                <div class="section-title">Network监听模式</div>
+                <div class="section-title">网络监听模式</div>
                 <p style="font-size: 12px; color: #666; margin-bottom: 15px;">
                     实时捕获当前页面的所有媒体网络请求（包括动态加载的资源）
                 </p>
@@ -628,22 +602,16 @@
             </button>
         </div>
 
-        <div class="stats">
-            <div class="stat-item">
-                <div class="stat-value" id="foundCount">0</div>
-                <div class="stat-label">找到图片</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value" id="downloadCount">0</div>
-                <div class="stat-label">已下载</div>
-            </div>
-        </div>
-
         <div class="progress-bar" id="progressBar">
             <div class="progress-fill" id="progressFill"></div>
         </div>
 
         <div class="status" id="status"></div>
+        
+        <!-- 打开下载文件夹按钮 - 全局可见 -->
+        <button class="btn btn-secondary" id="openDownloadFolder" style="margin-top: 15px;">
+            📂 打开下载文件夹
+        </button>
     </div>
 
     <script src="popup.js"></script>

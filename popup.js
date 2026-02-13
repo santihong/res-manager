@@ -1,434 +1,154 @@
-// popup.js - 弹出窗口逻辑
+// popup.js - 弹出窗口逻辑（统一版）
 
-// 标签页切换
-document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        const tab = btn.dataset.tab;
-        
-        // 更新按钮状态
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        
-        // 更新内容显示
-        document.querySelectorAll('.tab-content').forEach(content => {
-            content.classList.remove('active');
+// ========== 全局状态 ==========
+let currentMode = 'current';  // 当前模式: current, custom, network
+let isMonitoring = false;     // 网络监听是否开启
+let monitoringInterval = null; // 网络监听轮询定时器
+
+// 统一的资源存储（三种模式共用）
+let allResources = [];        // 所有扫描/捕获到的资源
+let filteredResources = [];   // 过滤后的资源
+let selectedResources = new Set(); // 选中的资源索引
+let manualClear = false;      // 是否手动清空选择
+
+// 记录最后一次下载的时间戳
+let lastDownloadTimestamp = null;
+
+// ========== 模式切换 ==========
+function initModeSelector() {
+    const modeRadios = document.querySelectorAll('input[name="downloadMode"]');
+    modeRadios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            const newMode = e.target.value;
+            handleModeChange(newMode);
         });
-        document.getElementById(tab + 'Tab').classList.add('active');
     });
-});
-
-// 获取选中的图片格式
-function getSelectedFormats(tabSuffix = '') {
-    const formats = [];
-    const formatIds = ['jpg', 'png', 'gif', 'webp', 'svg', 'bmp'];
-    
-    formatIds.forEach(format => {
-        const checkbox = document.getElementById(format + tabSuffix);
-        if (checkbox && checkbox.checked) {
-            formats.push(format);
-        }
-    });
-    
-    return formats;
+    updateModeUI();
 }
 
-// 显示状态消息
-function showStatus(message, type = 'info') {
-    const statusEl = document.getElementById('status');
-    statusEl.textContent = message;
-    statusEl.className = `status ${type}`;
-    statusEl.style.display = 'block';
-    
-    if (type === 'success' || type === 'error') {
-        setTimeout(() => {
-            statusEl.style.display = 'none';
-        }, 5000);
+// 处理模式切换
+function handleModeChange(newMode) {
+    // 如果从网络监听模式切出，停止轮询（但不停止监听）
+    if (currentMode === 'network' && newMode !== 'network') {
+        if (monitoringInterval) {
+            clearInterval(monitoringInterval);
+            monitoringInterval = null;
+        }
     }
-}
-
-// 更新统计数据
-function updateStats(found, downloaded) {
-    document.getElementById('foundCount').textContent = found;
-    document.getElementById('downloadCount').textContent = downloaded;
-}
-
-// 更新进度条
-function updateProgress(current, total) {
-    const progressBar = document.getElementById('progressBar');
-    const progressFill = document.getElementById('progressFill');
     
-    if (total > 0) {
-        progressBar.style.display = 'block';
-        const percent = (current / total) * 100;
-        progressFill.style.width = percent + '%';
-        
-        if (current >= total) {
-            setTimeout(() => {
-                progressBar.style.display = 'none';
-                progressFill.style.width = '0%';
-            }, 2000);
-        }
+    // 切换模式时清空资源列表（网络监听模式除外，保留数据）
+    if (newMode !== 'network') {
+        allResources = [];
+        filteredResources = [];
+        selectedResources.clear();
+        manualClear = false;
+    }
+    
+    currentMode = newMode;
+    updateModeUI();
+    
+    // 如果切换到网络监听模式，恢复数据并启动轮询
+    if (newMode === 'network') {
+        initNetworkMonitorState();
+    } else {
+        renderResourceList();
     }
 }
 
-// 生成时间戳目录名
-function generateTimestampFolder() {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hour = String(now.getHours()).padStart(2, '0');
-    const minute = String(now.getMinutes()).padStart(2, '0');
-    const second = String(now.getSeconds()).padStart(2, '0');
-    return `${year}${month}${day}_${hour}${minute}${second}`;
+// 更新模式相关的UI显示
+function updateModeUI() {
+    const customUrlSection = document.getElementById('customUrlSection');
+    const networkDescSection = document.getElementById('networkDescSection');
+    const sizeFilterSection = document.getElementById('sizeFilterSection');
+    const scanBtn = document.getElementById('scanPage');
+    const monitoringControls = document.getElementById('monitoringControls');
+    
+    // 隐藏所有模式特定的部分
+    if (customUrlSection) customUrlSection.style.display = 'none';
+    if (networkDescSection) networkDescSection.style.display = 'none';
+    
+    // 根据当前模式显示相应部分
+    switch (currentMode) {
+        case 'current':
+            if (sizeFilterSection) sizeFilterSection.style.display = 'block';
+            if (scanBtn) scanBtn.style.display = 'flex';
+            if (monitoringControls) monitoringControls.style.display = 'none';
+            break;
+        case 'custom':
+            if (customUrlSection) customUrlSection.style.display = 'block';
+            if (sizeFilterSection) sizeFilterSection.style.display = 'block';
+            if (scanBtn) scanBtn.style.display = 'flex';
+            if (monitoringControls) monitoringControls.style.display = 'none';
+            break;
+        case 'network':
+            if (networkDescSection) networkDescSection.style.display = 'block';
+            if (sizeFilterSection) sizeFilterSection.style.display = 'none';
+            if (scanBtn) scanBtn.style.display = 'none';
+            if (monitoringControls) monitoringControls.style.display = 'flex';
+            break;
+    }
 }
 
-// 下载当前页面图片
-document.getElementById('downloadCurrent').addEventListener('click', async () => {
-    const formats = getSelectedFormats();
-    const minSize = parseInt(document.getElementById('minSize').value) || 0;
-    
-    if (formats.length === 0) {
-        showStatus('请至少选择一种图片格式', 'error');
-        return;
+// 切换到指定模式
+function switchToMode(modeName) {
+    const modeRadio = document.querySelector(`input[name="downloadMode"][value="${modeName}"]`);
+    if (modeRadio) {
+        modeRadio.checked = true;
+        handleModeChange(modeName);
     }
-    
-    showStatus('正在扫描当前页面...', 'info');
-    updateStats(0, 0);
-    
-    try {
-        // 获取当前活动标签页
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        
-        // 注入内容脚本并执行
-        const results = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: extractImages,
-            args: [formats, minSize]
-        });
-        
-        const images = results[0].result;
-        
-        if (images.length === 0) {
-            showStatus('未找到符合条件的图片', 'error');
-            return;
-        }
-        
-        updateStats(images.length, 0);
-        showStatus(`找到 ${images.length} 张图片，开始下载...`, 'info');
-        
-        // 生成本次下载的时间戳目录
-        const timestamp = generateTimestampFolder();
-        
-        // 下载图片
-        let downloaded = 0;
-        for (let i = 0; i < images.length; i++) {
-            try {
-                await chrome.runtime.sendMessage({
-                    action: 'download',
-                    url: images[i].url,
-                    filename: images[i].filename,
-                    timestamp: timestamp
-                });
-                downloaded++;
-                updateStats(images.length, downloaded);
-                updateProgress(downloaded, images.length);
-            } catch (error) {
-                console.error('下载失败:', error);
-            }
-            
-            // 避免下载过快被限制
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-        showStatus(`成功下载 ${downloaded} 张图片到 images/${timestamp}/ 目录！`, 'success');
-        
-    } catch (error) {
-        console.error('错误:', error);
-        showStatus('下载失败: ' + error.message, 'error');
-    }
-});
-
-// 下载指定URL页面图片
-document.getElementById('downloadCustom').addEventListener('click', async () => {
-    const url = document.getElementById('customUrl').value.trim();
-    const formats = getSelectedFormats('2');
-    const minSize = parseInt(document.getElementById('minSize2').value) || 0;
-    
-    if (!url) {
-        showStatus('请输入目标网页URL', 'error');
-        return;
-    }
-    
-    if (formats.length === 0) {
-        showStatus('请至少选择一种图片格式', 'error');
-        return;
-    }
-    
-    showStatus('正在打开目标页面...', 'info');
-    updateStats(0, 0);
-    
-    try {
-        // 创建新标签页
-        const tab = await chrome.tabs.create({ url: url, active: false });
-        
-        // 等待页面加载
-        await new Promise((resolve) => {
-            chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
-                if (tabId === tab.id && info.status === 'complete') {
-                    chrome.tabs.onUpdated.removeListener(listener);
-                    resolve();
-                }
-            });
-        });
-        
-        showStatus('正在扫描页面...', 'info');
-        
-        // 注入内容脚本并执行
-        const results = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: extractImages,
-            args: [formats, minSize]
-        });
-        
-        const images = results[0].result;
-        
-        // 关闭标签页
-        await chrome.tabs.remove(tab.id);
-        
-        if (images.length === 0) {
-            showStatus('未找到符合条件的图片', 'error');
-            return;
-        }
-        
-        updateStats(images.length, 0);
-        showStatus(`找到 ${images.length} 张图片，开始下载...`, 'info');
-        
-        // 生成本次下载的时间戳目录
-        const timestamp = generateTimestampFolder();
-        
-        // 下载图片
-        let downloaded = 0;
-        for (let i = 0; i < images.length; i++) {
-            try {
-                await chrome.runtime.sendMessage({
-                    action: 'download',
-                    url: images[i].url,
-                    filename: images[i].filename,
-                    timestamp: timestamp
-                });
-                downloaded++;
-                updateStats(images.length, downloaded);
-                updateProgress(downloaded, images.length);
-            } catch (error) {
-                console.error('下载失败:', error);
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-        showStatus(`成功下载 ${downloaded} 张图片到 images/${timestamp}/ 目录！`, 'success');
-        
-    } catch (error) {
-        console.error('错误:', error);
-        showStatus('下载失败: ' + error.message, 'error');
-    }
-});
-
-// 提取图片的函数（将在页面上下文中执行）
-function extractImages(formats, minSize) {
-    const images = [];
-    const seen = new Set();
-    
-    // 构建格式正则表达式
-    const formatPattern = formats.map(f => {
-        if (f === 'jpg') return 'jpe?g';
-        return f;
-    }).join('|');
-    const regex = new RegExp(`\\.(${formatPattern})($|\\?|#)`, 'i');
-    
-    // 辅助函数：检查图片尺寸
-    function checkSize(img) {
-        return new Promise((resolve) => {
-            if (img.naturalWidth && img.naturalHeight) {
-                resolve({
-                    width: img.naturalWidth,
-                    height: img.naturalHeight,
-                    valid: img.naturalWidth >= minSize || img.naturalHeight >= minSize
-                });
-            } else {
-                const tempImg = new Image();
-                tempImg.onload = () => {
-                    resolve({
-                        width: tempImg.naturalWidth,
-                        height: tempImg.naturalHeight,
-                        valid: tempImg.naturalWidth >= minSize || tempImg.naturalHeight >= minSize
-                    });
-                };
-                tempImg.onerror = () => {
-                    resolve({ width: 0, height: 0, valid: false });
-                };
-                tempImg.src = img.src;
-            }
-        });
-    }
-    
-    // 辅助函数：生成文件名
-    function generateFilename(url, index) {
-        try {
-            const urlObj = new URL(url, window.location.href);
-            const pathname = urlObj.pathname;
-            const filename = pathname.split('/').pop() || `image_${index}`;
-            
-            // 确保有扩展名
-            if (!filename.includes('.')) {
-                const ext = formats[0] === 'jpg' ? 'jpg' : formats[0];
-                return `${filename}.${ext}`;
-            }
-            
-            return filename;
-        } catch {
-            const ext = formats[0] === 'jpg' ? 'jpg' : formats[0];
-            return `image_${index}.${ext}`;
-        }
-    }
-    
-    // 辅助函数：添加图片
-    async function addImage(url, index) {
-        if (!url || seen.has(url)) return;
-        
-        // 转换为绝对URL
-        try {
-            url = new URL(url, window.location.href).href;
-        } catch {
-            return;
-        }
-        
-        // 检查格式
-        if (!regex.test(url)) return;
-        
-        seen.add(url);
-        
-        // 如果需要检查尺寸
-        if (minSize > 0) {
-            const img = document.createElement('img');
-            img.src = url;
-            const size = await checkSize(img);
-            if (!size.valid) return;
-        }
-        
-        images.push({
-            url: url,
-            filename: generateFilename(url, index)
-        });
-    }
-    
-    // 收集所有图片URL
-    const promises = [];
-    let index = 0;
-    
-    // 1. <img> 标签
-    document.querySelectorAll('img').forEach(img => {
-        if (img.src) {
-            promises.push(addImage(img.src, index++));
-        }
-        if (img.srcset) {
-            const srcsetUrls = img.srcset.split(',').map(s => s.trim().split(' ')[0]);
-            srcsetUrls.forEach(url => {
-                promises.push(addImage(url, index++));
-            });
-        }
-    });
-    
-    // 2. CSS背景图片
-    document.querySelectorAll('*').forEach(el => {
-        const style = window.getComputedStyle(el);
-        const bgImage = style.backgroundImage;
-        if (bgImage && bgImage !== 'none') {
-            const matches = bgImage.match(/url\(['"]?([^'"]+)['"]?\)/g);
-            if (matches) {
-                matches.forEach(match => {
-                    const url = match.replace(/url\(['"]?([^'"]+)['"]?\)/, '$1');
-                    promises.push(addImage(url, index++));
-                });
-            }
-        }
-    });
-    
-    // 3. <picture> 标签
-    document.querySelectorAll('picture source').forEach(source => {
-        if (source.srcset) {
-            const srcsetUrls = source.srcset.split(',').map(s => s.trim().split(' ')[0]);
-            srcsetUrls.forEach(url => {
-                promises.push(addImage(url, index++));
-            });
-        }
-    });
-    
-    // 4. <link rel="icon"> 等
-    document.querySelectorAll('link[rel*="icon"]').forEach(link => {
-        if (link.href) {
-            promises.push(addImage(link.href, index++));
-        }
-    });
-    
-    // 等待所有检查完成
-    return Promise.all(promises).then(() => images);
 }
 
-// ========== Network监听模式 ==========
-
-let isMonitoring = false;
-let monitoringInterval = null;
-
-// 获取Network监听过滤器设置
-function getNetworkFilters() {
+// ========== 统一的过滤器配置 ==========
+function getResourceFilters() {
     const filters = {
         resourceTypes: [],
         imageFormats: [],
         videoFormats: [],
-        audioFormats: []
+        audioFormats: [],
+        otherFormats: []
     };
     
     // 资源类型
-    if (document.getElementById('networkTypeImage')?.checked) {
-        filters.resourceTypes.push('image');
-    }
-    if (document.getElementById('networkTypeVideo')?.checked) {
-        filters.resourceTypes.push('video');
-    }
-    if (document.getElementById('networkTypeAudio')?.checked) {
-        filters.resourceTypes.push('audio');
-    }
-    if (document.getElementById('networkTypeMedia')?.checked) {
-        filters.resourceTypes.push('media');
-    }
+    if (document.getElementById('typeImage')?.checked) filters.resourceTypes.push('image');
+    if (document.getElementById('typeVideo')?.checked) filters.resourceTypes.push('video');
+    if (document.getElementById('typeAudio')?.checked) filters.resourceTypes.push('audio');
+    if (document.getElementById('typeOther')?.checked) filters.resourceTypes.push('other');
     
     // 图片格式
-    const imageFormatIds = ['networkJpg', 'networkPng', 'networkGif', 'networkWebp', 'networkSvg', 'networkBmp', 'networkIco'];
-    const imageFormatMap = { networkJpg: 'jpg', networkPng: 'png', networkGif: 'gif', networkWebp: 'webp', networkSvg: 'svg', networkBmp: 'bmp', networkIco: 'ico' };
-    imageFormatIds.forEach(id => {
-        if (document.getElementById(id)?.checked) {
-            filters.imageFormats.push(imageFormatMap[id]);
-        }
+    const imageFormatMap = {
+        'formatJpg': 'jpg', 'formatPng': 'png', 'formatGif': 'gif',
+        'formatWebp': 'webp', 'formatSvg': 'svg', 'formatBmp': 'bmp', 'formatIco': 'ico'
+    };
+    Object.entries(imageFormatMap).forEach(([id, format]) => {
+        if (document.getElementById(id)?.checked) filters.imageFormats.push(format);
     });
     
     // 视频格式
-    const videoFormatIds = ['networkMp4', 'networkWebm', 'networkM3u8', 'networkFlv', 'networkAvi', 'networkMov'];
-    const videoFormatMap = { networkMp4: 'mp4', networkWebm: 'webm', networkM3u8: 'm3u8', networkFlv: 'flv', networkAvi: 'avi', networkMov: 'mov' };
-    videoFormatIds.forEach(id => {
-        if (document.getElementById(id)?.checked) {
-            filters.videoFormats.push(videoFormatMap[id]);
-        }
+    const videoFormatMap = {
+        'formatMp4': 'mp4', 'formatWebm': 'webm', 'formatM3u8': 'm3u8',
+        'formatFlv': 'flv', 'formatAvi': 'avi', 'formatMov': 'mov'
+    };
+    Object.entries(videoFormatMap).forEach(([id, format]) => {
+        if (document.getElementById(id)?.checked) filters.videoFormats.push(format);
     });
     
     // 音频格式
-    const audioFormatIds = ['networkMp3', 'networkWav', 'networkOgg', 'networkAac', 'networkFlac'];
-    const audioFormatMap = { networkMp3: 'mp3', networkWav: 'wav', networkOgg: 'ogg', networkAac: 'aac', networkFlac: 'flac' };
-    audioFormatIds.forEach(id => {
-        if (document.getElementById(id)?.checked) {
-            filters.audioFormats.push(audioFormatMap[id]);
-        }
+    const audioFormatMap = {
+        'formatMp3': 'mp3', 'formatWav': 'wav', 'formatOgg': 'ogg',
+        'formatAac': 'aac', 'formatFlac': 'flac'
+    };
+    Object.entries(audioFormatMap).forEach(([id, format]) => {
+        if (document.getElementById(id)?.checked) filters.audioFormats.push(format);
+    });
+    
+    // 其它格式
+    const otherFormatMap = {
+        'formatPdf': 'pdf', 'formatDoc': 'doc', 'formatXls': 'xls',
+        'formatPpt': 'ppt', 'formatZip': 'zip', 'formatTxt': 'txt',
+        'formatJson': 'json', 'formatXml': 'xml'
+    };
+    Object.entries(otherFormatMap).forEach(([id, format]) => {
+        if (document.getElementById(id)?.checked) filters.otherFormats.push(format);
     });
     
     return filters;
@@ -439,33 +159,44 @@ function restoreFiltersToUI(filters) {
     if (!filters) return;
     
     // 资源类型
-    document.getElementById('networkTypeImage').checked = filters.resourceTypes?.includes('image') ?? true;
-    document.getElementById('networkTypeVideo').checked = filters.resourceTypes?.includes('video') ?? false;
-    document.getElementById('networkTypeAudio').checked = filters.resourceTypes?.includes('audio') ?? false;
-    document.getElementById('networkTypeMedia').checked = filters.resourceTypes?.includes('media') ?? false;
+    const typeImageEl = document.getElementById('typeImage');
+    const typeVideoEl = document.getElementById('typeVideo');
+    const typeAudioEl = document.getElementById('typeAudio');
+    const typeOtherEl = document.getElementById('typeOther');
+    
+    if (typeImageEl) typeImageEl.checked = filters.resourceTypes?.includes('image') ?? true;
+    if (typeVideoEl) typeVideoEl.checked = filters.resourceTypes?.includes('video') ?? false;
+    if (typeAudioEl) typeAudioEl.checked = filters.resourceTypes?.includes('audio') ?? false;
+    if (typeOtherEl) typeOtherEl.checked = filters.resourceTypes?.includes('other') ?? false;
     
     // 图片格式
-    const imageFormatMap = { jpg: 'networkJpg', png: 'networkPng', gif: 'networkGif', webp: 'networkWebp', svg: 'networkSvg', bmp: 'networkBmp', ico: 'networkIco' };
+    const imageFormatMap = { jpg: 'formatJpg', png: 'formatPng', gif: 'formatGif', webp: 'formatWebp', svg: 'formatSvg', bmp: 'formatBmp', ico: 'formatIco' };
     Object.entries(imageFormatMap).forEach(([format, id]) => {
         const el = document.getElementById(id);
         if (el) el.checked = filters.imageFormats?.includes(format) ?? false;
     });
     
     // 视频格式
-    const videoFormatMap = { mp4: 'networkMp4', webm: 'networkWebm', m3u8: 'networkM3u8', flv: 'networkFlv', avi: 'networkAvi', mov: 'networkMov' };
+    const videoFormatMap = { mp4: 'formatMp4', webm: 'formatWebm', m3u8: 'formatM3u8', flv: 'formatFlv', avi: 'formatAvi', mov: 'formatMov' };
     Object.entries(videoFormatMap).forEach(([format, id]) => {
         const el = document.getElementById(id);
         if (el) el.checked = filters.videoFormats?.includes(format) ?? false;
     });
     
     // 音频格式
-    const audioFormatMap = { mp3: 'networkMp3', wav: 'networkWav', ogg: 'networkOgg', aac: 'networkAac', flac: 'networkFlac' };
+    const audioFormatMap = { mp3: 'formatMp3', wav: 'formatWav', ogg: 'formatOgg', aac: 'formatAac', flac: 'formatFlac' };
     Object.entries(audioFormatMap).forEach(([format, id]) => {
         const el = document.getElementById(id);
         if (el) el.checked = filters.audioFormats?.includes(format) ?? false;
     });
     
-    // 更新格式过滤器显示状态
+    // 其它格式
+    const otherFormatMap = { pdf: 'formatPdf', doc: 'formatDoc', xls: 'formatXls', ppt: 'formatPpt', zip: 'formatZip', txt: 'formatTxt', json: 'formatJson', xml: 'formatXml' };
+    Object.entries(otherFormatMap).forEach(([format, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = filters.otherFormats?.includes(format) ?? false;
+    });
+    
     updateFormatFilterVisibility();
 }
 
@@ -474,83 +205,694 @@ function updateFormatFilterVisibility() {
     const imageFilter = document.getElementById('imageFormatFilter');
     const videoFilter = document.getElementById('videoFormatFilter');
     const audioFilter = document.getElementById('audioFormatFilter');
+    const otherFilter = document.getElementById('otherFormatFilter');
     
-    if (imageFilter) {
-        imageFilter.style.display = document.getElementById('networkTypeImage')?.checked ? 'block' : 'none';
+    if (imageFilter) imageFilter.style.display = document.getElementById('typeImage')?.checked ? 'block' : 'none';
+    if (videoFilter) videoFilter.style.display = document.getElementById('typeVideo')?.checked ? 'block' : 'none';
+    if (audioFilter) audioFilter.style.display = document.getElementById('typeAudio')?.checked ? 'block' : 'none';
+    if (otherFilter) otherFilter.style.display = document.getElementById('typeOther')?.checked ? 'block' : 'none';
+}
+
+// 当过滤器变化时
+async function onFilterChange() {
+    updateFormatFilterVisibility();
+    
+    // 重新过滤并显示资源
+    if (allResources.length > 0) {
+        filterAndRenderResources();
     }
-    if (videoFilter) {
-        videoFilter.style.display = document.getElementById('networkTypeVideo')?.checked ? 'block' : 'none';
-    }
-    if (audioFilter) {
-        audioFilter.style.display = document.getElementById('networkTypeAudio')?.checked ? 'block' : 'none';
+    
+    // 如果正在网络监听，实时更新 background.js 的过滤器
+    if (isMonitoring && currentMode === 'network') {
+        const filters = getResourceFilters();
+        try {
+            await chrome.runtime.sendMessage({ action: 'updateFilters', filters: filters });
+            console.log('过滤器已更新');
+        } catch (error) {
+            console.error('更新过滤器失败:', error);
+        }
     }
 }
 
-// 监听资源类型复选框变化
-document.getElementById('networkTypeImage')?.addEventListener('change', updateFormatFilterVisibility);
-document.getElementById('networkTypeVideo')?.addEventListener('change', updateFormatFilterVisibility);
-document.getElementById('networkTypeAudio')?.addEventListener('change', updateFormatFilterVisibility);
+// ========== 统一的资源列表渲染 ==========
+function filterAndRenderResources() {
+    const filters = getResourceFilters();
+    
+    // 过滤资源
+    filteredResources = allResources.filter(res => {
+        const type = res.type || res.category || 'image';
+        
+        // 检查资源类型是否被选中
+        if (!filters.resourceTypes.includes(type)) return false;
+        
+        // 获取格式
+        const format = getFileExtension(res.url) || res.format || '';
+        
+        // 根据类型检查格式
+        if (type === 'image') {
+            return filters.imageFormats.length === 0 || filters.imageFormats.includes(format);
+        } else if (type === 'video') {
+            return filters.videoFormats.length === 0 || filters.videoFormats.includes(format);
+        } else if (type === 'audio') {
+            return filters.audioFormats.length === 0 || filters.audioFormats.includes(format);
+        } else if (type === 'other') {
+            return filters.otherFormats.length === 0 || filters.otherFormats.includes(format);
+        }
+        return true;
+    });
+    
+    renderResourceList();
+}
 
-// 初始化时恢复监听状态
+// 渲染资源列表（统一入口）
+function renderResourceList() {
+    const listEl = document.getElementById('resourceList');
+    const countEl = document.getElementById('resourceCount');
+    const selectControlsEl = document.getElementById('selectControls');
+    const selectedCountEl = document.getElementById('selectedCount');
+    
+    if (!listEl) return;
+    
+    const resources = filteredResources;
+    
+    if (countEl) countEl.textContent = resources.length;
+    
+    if (resources.length === 0) {
+        if (selectControlsEl) selectControlsEl.style.display = 'none';
+        if (selectedCountEl) selectedCountEl.textContent = '0';
+        
+        const emptyMessage = currentMode === 'network' 
+            ? '暂无发现的资源' 
+            : '点击"扫描资源"开始';
+        listEl.innerHTML = `<p style="text-align: center; color: #999; font-size: 11px;">${emptyMessage}</p>`;
+        return;
+    }
+    
+    // 显示全选控制
+    if (selectControlsEl) selectControlsEl.style.display = 'inline';
+    
+    // 自动选择新增的资源（如果不是手动清空）
+    if (!manualClear) {
+        const oldSize = selectedResources.size;
+        resources.forEach((_, idx) => {
+            if (!selectedResources.has(idx) && idx >= oldSize) {
+                selectedResources.add(idx);
+            }
+        });
+        if (oldSize === 0) {
+            resources.forEach((_, idx) => selectedResources.add(idx));
+        }
+    }
+    
+    // 按类别分组
+    const grouped = { image: [], video: [], audio: [], other: [] };
+    resources.forEach((res, idx) => {
+        const type = res.type || res.category || 'image';
+        const category = type === 'media' ? 'other' : type;
+        if (grouped[category]) {
+            grouped[category].push({ ...res, globalIndex: idx });
+        }
+    });
+    
+    let html = '';
+    const categoryNames = { image: '🖼️ 图片', video: '🎬 视频', audio: '🎵 音频', other: '📦 其他' };
+    
+    Object.entries(grouped).forEach(([category, items]) => {
+        if (items.length === 0) return;
+        
+        html += `<div class="resource-category"><strong>${categoryNames[category]} (${items.length})</strong></div>`;
+        
+        items.forEach((res) => {
+            const filename = getFilenameFromUrl(res.url);
+            const shortFilename = filename.length > 25 ? filename.substring(0, 25) + '...' : filename;
+            const sizeText = res.size > 0 ? formatBytes(res.size) : '';
+            const formatText = (getFileExtension(res.url) || res.format || '').toUpperCase();
+            const isChecked = selectedResources.has(res.globalIndex);
+            
+            // 生成缩略图
+            let thumbHtml = '';
+            if (category === 'image') {
+                thumbHtml = `<div class="resource-thumb"><img src="${res.url}" alt="" onerror="this.parentElement.innerHTML='🖼️'"></div>`;
+            } else if (category === 'video') {
+                thumbHtml = `<div class="resource-thumb">🎬</div>`;
+            } else if (category === 'audio') {
+                thumbHtml = `<div class="resource-thumb">🎵</div>`;
+            } else {
+                thumbHtml = `<div class="resource-thumb">📦</div>`;
+            }
+            
+            html += `
+                <div class="resource-item" title="${res.url}" data-index="${res.globalIndex}">
+                    <input type="checkbox" class="resource-checkbox" data-index="${res.globalIndex}" ${isChecked ? 'checked' : ''}>
+                    ${thumbHtml}
+                    <div class="resource-info">
+                        <div class="resource-name">${shortFilename}</div>
+                        <div class="resource-url">${formatText}${sizeText ? ' · ' + sizeText : ''}</div>
+                    </div>
+                </div>
+            `;
+        });
+    });
+    
+    listEl.innerHTML = html;
+    
+    // 绑定勾选框事件
+    listEl.querySelectorAll('.resource-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', (e) => {
+            const index = parseInt(e.target.dataset.index);
+            if (e.target.checked) {
+                selectedResources.add(index);
+            } else {
+                selectedResources.delete(index);
+            }
+            updateSelectedCount();
+        });
+    });
+    
+    updateSelectedCount();
+}
+
+// 更新选中数量
+function updateSelectedCount() {
+    const selectedCountEl = document.getElementById('selectedCount');
+    if (selectedCountEl) {
+        selectedCountEl.textContent = selectedResources.size;
+    }
+}
+
+// 全选
+function selectAllResources() {
+    filteredResources.forEach((_, idx) => selectedResources.add(idx));
+    manualClear = false;
+    renderResourceList();
+}
+
+// 全不选
+function selectNoneResources() {
+    selectedResources.clear();
+    manualClear = true;
+    renderResourceList();
+}
+
+// ========== 工具函数 ==========
+function showStatus(message, type = 'info') {
+    const statusEl = document.getElementById('status');
+    if (!statusEl) return;
+    statusEl.textContent = message;
+    statusEl.className = `status ${type}`;
+    statusEl.style.display = 'block';
+    
+    if (type === 'success' || type === 'error') {
+        setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
+    }
+}
+
+function updateProgress(current, total) {
+    const progressBar = document.getElementById('progressBar');
+    const progressFill = document.getElementById('progressFill');
+    if (!progressBar || !progressFill) return;
+    
+    if (total > 0) {
+        progressBar.style.display = 'block';
+        progressFill.style.width = Math.round((current / total) * 100) + '%';
+    } else {
+        progressBar.style.display = 'none';
+    }
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+function generateTimestampFolder() {
+    const now = new Date();
+    return now.getFullYear().toString() +
+        String(now.getMonth() + 1).padStart(2, '0') +
+        String(now.getDate()).padStart(2, '0') + '_' +
+        String(now.getHours()).padStart(2, '0') +
+        String(now.getMinutes()).padStart(2, '0') +
+        String(now.getSeconds()).padStart(2, '0');
+}
+
+function getFilenameFromUrl(url) {
+    try {
+        const pathname = new URL(url).pathname;
+        return pathname.split('/').pop()?.split('?')[0] || 'resource';
+    } catch {
+        return 'resource';
+    }
+}
+
+function getFileExtension(url) {
+    try {
+        const pathname = new URL(url).pathname;
+        const filename = pathname.split('/').pop() || '';
+        // 清理CDN后缀: !w200, @100w, _webp等
+        let cleanFilename = filename
+            .split('?')[0].split('#')[0].split('!')[0].split('@')[0]
+            .replace(/_\d+x\d+/g, '').replace(/_thumb/gi, '');
+        const dotIndex = cleanFilename.lastIndexOf('.');
+        if (dotIndex > 0) {
+            let ext = cleanFilename.substring(dotIndex + 1).toLowerCase();
+            ext = ext.replace(/[^a-z0-9]/g, '');
+            // jpeg 归一化为 jpg
+            if (ext === 'jpeg') ext = 'jpg';
+            if (ext.length > 0 && ext.length <= 5) return ext;
+        }
+    } catch {}
+    return '';
+}
+
+function normalizeUrl(url) {
+    url = url.trim();
+    if (!url) return '';
+    if (!url.match(/^https?:\/\//i)) {
+        if (url.startsWith('//')) url = 'https:' + url;
+        else url = 'https://' + url;
+    }
+    return url;
+}
+
+// ========== 扫描功能（当前页面 & 指定网址模式） ==========
+async function scanResources() {
+    const filters = getResourceFilters();
+    
+    if (filters.resourceTypes.length === 0) {
+        showStatus('请至少选择一种资源类型', 'error');
+        return;
+    }
+    
+    const minSizeInput = document.getElementById('minSize');
+    const minSize = parseInt(minSizeInput?.value || '0') || 0;
+    
+    showStatus('正在扫描资源...', 'info');
+    
+    try {
+        if (currentMode === 'current') {
+            // 扫描当前页面
+            await scanCurrentPage(filters, minSize);
+        } else if (currentMode === 'custom') {
+            // 扫描指定网址
+            const customUrlInput = document.getElementById('customUrl');
+            let url = customUrlInput?.value?.trim();
+            
+            if (!url) {
+                showStatus('请输入目标网址', 'error');
+                return;
+            }
+            
+            url = normalizeUrl(url);
+            await scanCustomUrl(url, filters, minSize);
+        }
+    } catch (error) {
+        console.error('扫描失败:', error);
+        showStatus('扫描失败: ' + error.message, 'error');
+    }
+}
+
+// 扫描当前页面
+async function scanCurrentPage(filters, minSize) {
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        
+        const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: extractResourcesFromPage,
+            args: [filters, minSize]
+        });
+        
+        if (results && results[0] && results[0].result) {
+            allResources = results[0].result;
+            filterAndRenderResources();
+            
+            if (allResources.length === 0) {
+                showStatus('未找到任何资源', 'info');
+            } else {
+                showStatus(`扫描完成，找到 ${allResources.length} 个资源`, 'success');
+            }
+        } else {
+            showStatus('扫描失败：无法获取页面内容', 'error');
+        }
+    } catch (error) {
+        console.error('扫描当前页面失败:', error);
+        showStatus('扫描失败: ' + error.message, 'error');
+    }
+}
+
+// 扫描指定网址
+async function scanCustomUrl(url, filters, minSize) {
+    try {
+        // 先尝试直接 fetch
+        let html = '';
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+            });
+            if (response.ok) {
+                html = await response.text();
+            }
+        } catch (fetchError) {
+            console.log('直接fetch失败，尝试通过background代理:', fetchError);
+        }
+        
+        // 如果直接fetch失败，通过background.js代理
+        if (!html) {
+            const result = await chrome.runtime.sendMessage({
+                action: 'fetchUrl',
+                url: url
+            });
+            
+            if (result.error) {
+                throw new Error(result.error);
+            }
+            html = result.html;
+        }
+        
+        allResources = extractResourcesFromHtml(html, url, minSize);
+        filterAndRenderResources();
+        
+        if (allResources.length === 0) {
+            showStatus('未找到任何资源', 'info');
+        } else {
+            showStatus(`扫描完成，找到 ${allResources.length} 个资源`, 'success');
+        }
+    } catch (error) {
+        console.error('扫描指定网址失败:', error);
+        showStatus('扫描失败: ' + error.message, 'error');
+    }
+}
+
+// 从页面中提取资源（注入到目标页面执行）
+function extractResourcesFromPage(filters, minSize) {
+    const resources = [];
+    const seen = new Set();
+    
+    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'];
+    const videoExts = ['mp4', 'webm', 'm3u8', 'flv', 'avi', 'mov', 'mkv'];
+    const audioExts = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a'];
+    const otherExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', '7z', 'tar', 'gz', 'txt', 'json', 'xml'];
+    
+    function getExt(url) {
+        try {
+            const pathname = new URL(url, location.href).pathname;
+            const filename = pathname.split('/').pop() || '';
+            let cleanFilename = filename.split('?')[0].split('#')[0].split('!')[0].split('@')[0];
+            const dotIndex = cleanFilename.lastIndexOf('.');
+            if (dotIndex > 0) {
+                let ext = cleanFilename.substring(dotIndex + 1).toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (ext === 'jpeg') ext = 'jpg';
+                if (ext.length > 0 && ext.length <= 5) return ext;
+            }
+        } catch {}
+        return '';
+    }
+    
+    function detectType(url) {
+        const ext = getExt(url);
+        if (!ext) return null;
+        if (imageExts.includes(ext)) return 'image';
+        if (videoExts.includes(ext)) return 'video';
+        if (audioExts.includes(ext)) return 'audio';
+        if (otherExts.includes(ext)) return 'other';
+        return null;
+    }
+    
+    function addResource(url, type = null) {
+        if (!url || url.startsWith('data:') || url.startsWith('javascript:')) return;
+        try {
+            const absoluteUrl = new URL(url, location.href).href;
+            if (seen.has(absoluteUrl)) return;
+            
+            const detectedType = type || detectType(absoluteUrl);
+            if (!detectedType) return;
+            
+            // 检查是否在过滤器中
+            if (!filters.resourceTypes.includes(detectedType)) return;
+            
+            seen.add(absoluteUrl);
+            
+            let filename = absoluteUrl.split('/').pop()?.split('?')[0] || 'resource';
+            if (!filename.includes('.')) {
+                const ext = detectedType === 'image' ? 'jpg' : detectedType === 'video' ? 'mp4' : detectedType === 'audio' ? 'mp3' : 'bin';
+                filename = `${filename}.${ext}`;
+            }
+            
+            resources.push({
+                url: absoluteUrl,
+                filename: filename,
+                type: detectedType,
+                format: getExt(absoluteUrl)
+            });
+        } catch {}
+    }
+    
+    // 提取 <img>
+    if (filters.resourceTypes.includes('image')) {
+        document.querySelectorAll('img').forEach(img => {
+            addResource(img.src, 'image');
+            addResource(img.dataset?.src, 'image');
+            addResource(img.dataset?.original, 'image');
+            addResource(img.dataset?.lazySrc, 'image');
+            
+            const srcset = img.getAttribute('srcset');
+            if (srcset) {
+                srcset.split(',').forEach(s => {
+                    const url = s.trim().split(' ')[0];
+                    if (url) addResource(url, 'image');
+                });
+            }
+        });
+        
+        // 背景图片
+        document.querySelectorAll('[style*="background"]').forEach(el => {
+            const style = el.getAttribute('style') || '';
+            const matches = style.match(/url\(['"]?([^'")\s]+)['"]?\)/gi);
+            if (matches) {
+                matches.forEach(match => {
+                    const url = match.replace(/url\(['"]?([^'")\s]+)['"]?\)/i, '$1');
+                    addResource(url);
+                });
+            }
+        });
+    }
+    
+    // 提取 <video>
+    if (filters.resourceTypes.includes('video')) {
+        document.querySelectorAll('video').forEach(video => {
+            addResource(video.src, 'video');
+            video.querySelectorAll('source').forEach(source => {
+                addResource(source.src, 'video');
+            });
+        });
+    }
+    
+    // 提取 <audio>
+    if (filters.resourceTypes.includes('audio')) {
+        document.querySelectorAll('audio').forEach(audio => {
+            addResource(audio.src, 'audio');
+            audio.querySelectorAll('source').forEach(source => {
+                addResource(source.src, 'audio');
+            });
+        });
+    }
+    
+    // 提取其他资源（链接）
+    if (filters.resourceTypes.includes('other')) {
+        document.querySelectorAll('a[href]').forEach(link => {
+            addResource(link.href, null);
+        });
+        document.querySelectorAll('embed[src], object[data]').forEach(el => {
+            addResource(el.src || el.data, null);
+        });
+    }
+    
+    return resources;
+}
+
+// 从 HTML 字符串中提取资源
+function extractResourcesFromHtml(html, baseUrl, minSize) {
+    const resources = [];
+    const seen = new Set();
+    
+    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'];
+    const videoExts = ['mp4', 'webm', 'm3u8', 'flv', 'avi', 'mov', 'mkv'];
+    const audioExts = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a'];
+    const otherExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', '7z', 'tar', 'gz', 'txt', 'json', 'xml'];
+    
+    function getExt(url) {
+        try {
+            const pathname = new URL(url, baseUrl).pathname;
+            const filename = pathname.split('/').pop() || '';
+            let cleanFilename = filename.split('?')[0].split('#')[0].split('!')[0].split('@')[0];
+            const dotIndex = cleanFilename.lastIndexOf('.');
+            if (dotIndex > 0) {
+                let ext = cleanFilename.substring(dotIndex + 1).toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (ext === 'jpeg') ext = 'jpg';
+                if (ext.length > 0 && ext.length <= 5) return ext;
+            }
+        } catch {}
+        return '';
+    }
+    
+    function detectType(url) {
+        const ext = getExt(url);
+        if (!ext) return null;
+        if (imageExts.includes(ext)) return 'image';
+        if (videoExts.includes(ext)) return 'video';
+        if (audioExts.includes(ext)) return 'audio';
+        if (otherExts.includes(ext)) return 'other';
+        return null;
+    }
+    
+    function toAbsoluteUrl(src) {
+        if (!src || src.startsWith('data:') || src.startsWith('javascript:')) return null;
+        try {
+            return new URL(src, baseUrl).href;
+        } catch {
+            return null;
+        }
+    }
+    
+    function addResource(url, forcedType = null) {
+        const absoluteUrl = toAbsoluteUrl(url);
+        if (!absoluteUrl || seen.has(absoluteUrl)) return;
+        
+        const type = forcedType || detectType(absoluteUrl);
+        if (!type) return;
+        
+        seen.add(absoluteUrl);
+        
+        let filename;
+        try {
+            const pathname = new URL(absoluteUrl).pathname;
+            filename = pathname.split('/').pop() || `resource_${resources.length}`;
+            if (!filename.includes('.')) {
+                const ext = type === 'image' ? 'jpg' : type === 'video' ? 'mp4' : type === 'audio' ? 'mp3' : 'bin';
+                filename = `${filename}.${ext}`;
+            }
+        } catch {
+            filename = `resource_${resources.length}.bin`;
+        }
+        
+        resources.push({
+            url: absoluteUrl,
+            filename: filename,
+            type: type,
+            format: getExt(absoluteUrl)
+        });
+    }
+    
+    // 解析 HTML
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    
+    // 提取 <img>
+    doc.querySelectorAll('img').forEach(img => {
+        addResource(img.getAttribute('src'), 'image');
+        addResource(img.dataset?.src, 'image');
+        addResource(img.dataset?.original, 'image');
+        
+        const srcset = img.getAttribute('srcset');
+        if (srcset) {
+            srcset.split(',').forEach(s => {
+                const url = s.trim().split(' ')[0];
+                if (url) addResource(url, 'image');
+            });
+        }
+    });
+    
+    // 背景图片
+    doc.querySelectorAll('[style*="background"]').forEach(el => {
+        const style = el.getAttribute('style') || '';
+        const matches = style.match(/url\(['"]?([^'")\s]+)['"]?\)/gi);
+        if (matches) {
+            matches.forEach(match => {
+                const url = match.replace(/url\(['"]?([^'")\s]+)['"]?\)/i, '$1');
+                addResource(url);
+            });
+        }
+    });
+    
+    // 提取 <video>
+    doc.querySelectorAll('video').forEach(video => {
+        addResource(video.getAttribute('src'), 'video');
+        video.querySelectorAll('source').forEach(source => {
+            addResource(source.getAttribute('src'), 'video');
+        });
+    });
+    
+    // 提取 <audio>
+    doc.querySelectorAll('audio').forEach(audio => {
+        addResource(audio.getAttribute('src'), 'audio');
+        audio.querySelectorAll('source').forEach(source => {
+            addResource(source.getAttribute('src'), 'audio');
+        });
+    });
+    
+    // 提取链接
+    doc.querySelectorAll('a[href]').forEach(link => {
+        addResource(link.getAttribute('href'));
+    });
+    
+    return resources;
+}
+
+// ========== 网络监听功能 ==========
 async function initNetworkMonitorState() {
     try {
         const response = await chrome.runtime.sendMessage({ action: 'getMonitoringStatus' });
         
         if (response.isMonitoring) {
             isMonitoring = true;
-            document.getElementById('startMonitoring').style.display = 'none';
-            document.getElementById('stopMonitoring').style.display = 'block';
-            showStatus('正在监听Network请求...', 'info');
+            updateMonitoringUI(true);
+            showStatus('正在监听网络请求...', 'info');
             
-            // 启动定时更新
-            monitoringInterval = setInterval(updateNetworkResourceList, 1000);
-            
-            // 如果正在监听，自动切换到Network标签页
-            switchToTab('network');
-        } else if (response.count > 0) {
-            // 如果有已捕获的数据，也切换到Network标签页
-            switchToTab('network');
+            // 启动轮询
+            monitoringInterval = setInterval(refreshNetworkResources, 1000);
         }
+        
+        // 恢复已捕获的资源
+        await refreshNetworkResources();
         
         // 恢复过滤器设置
         if (response.filters) {
             restoreFiltersToUI(response.filters);
         }
         
-        // 立即更新资源列表
-        updateNetworkResourceList();
-        
     } catch (error) {
         console.error('初始化监听状态失败:', error);
     }
 }
 
-// 切换到指定标签页
-function switchToTab(tabName) {
-    // 更新按钮状态
-    document.querySelectorAll('.tab-btn').forEach(b => {
-        b.classList.remove('active');
-        if (b.dataset.tab === tabName) {
-            b.classList.add('active');
-        }
-    });
-    
-    // 更新内容显示
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
-    document.getElementById(tabName + 'Tab').classList.add('active');
+// 刷新网络捕获的资源
+async function refreshNetworkResources() {
+    try {
+        const response = await chrome.runtime.sendMessage({ action: 'getCapturedResources' });
+        const resources = response.resources || [];
+        
+        // 更新资源列表
+        allResources = resources.map(r => ({
+            ...r,
+            type: r.category || 'image',
+            format: r.type
+        }));
+        
+        filterAndRenderResources();
+    } catch (error) {
+        console.error('获取捕获资源失败:', error);
+    }
 }
 
-// 页面加载完成后初始化
-document.addEventListener('DOMContentLoaded', () => {
-    initNetworkMonitorState();
-    updateFormatFilterVisibility();
-});
-
 // 开始监听
-document.getElementById('startMonitoring').addEventListener('click', async () => {
-    const filters = getNetworkFilters();
+async function startMonitoring() {
+    const filters = getResourceFilters();
     
     if (filters.resourceTypes.length === 0) {
         showStatus('请至少选择一种资源类型', 'error');
@@ -560,7 +902,6 @@ document.getElementById('startMonitoring').addEventListener('click', async () =>
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         
-        // 通知background开始监听，传递过滤器设置
         await chrome.runtime.sendMessage({
             action: 'startMonitoring',
             tabId: tab.id,
@@ -568,28 +909,32 @@ document.getElementById('startMonitoring').addEventListener('click', async () =>
         });
         
         isMonitoring = true;
-        document.getElementById('startMonitoring').style.display = 'none';
-        document.getElementById('stopMonitoring').style.display = 'block';
+        updateMonitoringUI(true);
+        showStatus('正在监听网络请求...', 'info');
         
-        showStatus('正在监听Network请求...', 'info');
+        // 清空当前列表
+        allResources = [];
+        filteredResources = [];
+        selectedResources.clear();
+        manualClear = false;
+        renderResourceList();
         
-        // 定期更新捕获的资源列表
-        monitoringInterval = setInterval(updateNetworkResourceList, 1000);
+        // 启动轮询
+        monitoringInterval = setInterval(refreshNetworkResources, 1000);
         
     } catch (error) {
         console.error('启动监听失败:', error);
         showStatus('启动监听失败: ' + error.message, 'error');
     }
-});
+}
 
 // 停止监听
-document.getElementById('stopMonitoring').addEventListener('click', async () => {
+async function stopMonitoring() {
     try {
         await chrome.runtime.sendMessage({ action: 'stopMonitoring' });
         
         isMonitoring = false;
-        document.getElementById('startMonitoring').style.display = 'block';
-        document.getElementById('stopMonitoring').style.display = 'none';
+        updateMonitoringUI(false);
         
         if (monitoringInterval) {
             clearInterval(monitoringInterval);
@@ -601,165 +946,181 @@ document.getElementById('stopMonitoring').addEventListener('click', async () => 
     } catch (error) {
         console.error('停止监听失败:', error);
     }
-});
+}
 
-// 清空列表
-document.getElementById('clearMonitoring').addEventListener('click', async () => {
+// 清空监听列表
+async function clearMonitoringList() {
     try {
         await chrome.runtime.sendMessage({ action: 'clearCapturedResources' });
-        updateNetworkResourceList();
+        allResources = [];
+        filteredResources = [];
+        selectedResources.clear();
+        manualClear = false;
+        renderResourceList();
         showStatus('已清空列表', 'success');
     } catch (error) {
         console.error('清空列表失败:', error);
     }
+}
+
+// 更新监听控制UI
+function updateMonitoringUI(monitoring) {
+    const startBtn = document.getElementById('startMonitoring');
+    const stopBtn = document.getElementById('stopMonitoring');
+    
+    if (monitoring) {
+        if (startBtn) startBtn.style.display = 'none';
+        if (stopBtn) stopBtn.style.display = 'flex';
+    } else {
+        if (startBtn) startBtn.style.display = 'flex';
+        if (stopBtn) stopBtn.style.display = 'none';
+    }
+}
+
+// ========== 下载功能（三种模式统一） ==========
+async function downloadSelectedResources() {
+    const resourcesToDownload = filteredResources.filter((_, idx) => selectedResources.has(idx));
+    
+    if (resourcesToDownload.length === 0) {
+        showStatus('请选择要下载的资源', 'error');
+        return;
+    }
+    
+    showStatus(`开始下载 ${resourcesToDownload.length} 个资源...`, 'info');
+    
+    const timestamp = generateTimestampFolder();
+    let downloaded = 0;
+    
+    for (let i = 0; i < resourcesToDownload.length; i++) {
+        try {
+            const res = resourcesToDownload[i];
+            const filename = getFilenameFromUrl(res.url) || `resource_${i}.${res.format || 'bin'}`;
+            
+            await chrome.runtime.sendMessage({
+                action: 'download',
+                url: res.url,
+                filename: filename,
+                timestamp: timestamp
+            });
+            
+            downloaded++;
+            updateProgress(downloaded, resourcesToDownload.length);
+        } catch (error) {
+            console.error('下载失败:', error);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    showStatus(`成功下载 ${downloaded} 个资源到 resources/${timestamp}/ 目录！`, 'success');
+    lastDownloadTimestamp = timestamp;
+}
+
+// ========== 事件绑定 ==========
+document.addEventListener('DOMContentLoaded', () => {
+    // 初始化模式选择器
+    initModeSelector();
+    
+    // 初始化格式过滤器显示
+    updateFormatFilterVisibility();
+    
+    // 绑定扫描按钮
+    document.getElementById('scanPage')?.addEventListener('click', scanResources);
+    
+    // 绑定下载按钮
+    document.getElementById('downloadResources')?.addEventListener('click', downloadSelectedResources);
+    
+    // 绑定全选/全不选
+    document.getElementById('selectAll')?.addEventListener('click', selectAllResources);
+    document.getElementById('selectNone')?.addEventListener('click', selectNoneResources);
+    
+    // 绑定监听控制按钮
+    document.getElementById('startMonitoring')?.addEventListener('click', startMonitoring);
+    document.getElementById('stopMonitoring')?.addEventListener('click', stopMonitoring);
+    document.getElementById('clearMonitoring')?.addEventListener('click', clearMonitoringList);
+    
+    // 绑定打开文件夹按钮
+    document.getElementById('openDownloadFolder')?.addEventListener('click', async () => {
+        try {
+            const response = await chrome.runtime.sendMessage({ action: 'openDownloadFolder' });
+            if (!response.success) {
+                showStatus('打开文件夹失败: ' + (response.error || '未知错误'), 'error');
+            }
+        } catch (error) {
+            console.error('打开文件夹失败:', error);
+            showStatus('打开文件夹失败: ' + error.message, 'error');
+        }
+    });
+    
+    // 绑定资源类型复选框
+    ['typeImage', 'typeVideo', 'typeAudio', 'typeOther'].forEach(id => {
+        document.getElementById(id)?.addEventListener('change', onFilterChange);
+    });
+    
+    // 绑定格式复选框
+    const formatIds = [
+        'formatJpg', 'formatPng', 'formatGif', 'formatWebp', 'formatSvg', 'formatBmp', 'formatIco',
+        'formatMp4', 'formatWebm', 'formatM3u8', 'formatFlv', 'formatAvi', 'formatMov',
+        'formatMp3', 'formatWav', 'formatOgg', 'formatAac', 'formatFlac',
+        'formatPdf', 'formatDoc', 'formatXls', 'formatPpt', 'formatZip', 'formatTxt', 'formatJson', 'formatXml'
+    ];
+    formatIds.forEach(id => {
+        document.getElementById(id)?.addEventListener('change', onFilterChange);
+    });
+    
+    // 如果是网络监听模式，初始化状态
+    if (currentMode === 'network') {
+        initNetworkMonitorState();
+    }
 });
 
-// 更新Network资源列表
-async function updateNetworkResourceList() {
-    try {
-        const response = await chrome.runtime.sendMessage({ action: 'getCapturedResources' });
-        const resources = response.resources || response.images || [];
+// ========== 兼容旧版 ==========
+// 兼容旧版 popup.html 中的元素ID
+const legacyMappings = {
+    'pageResourceList': 'resourceList',
+    'pageResourceCount': 'resourceCount',
+    'pageSelectControls': 'selectControls',
+    'pageSelectedCount': 'selectedCount',
+    'pageSelectAll': 'selectAll',
+    'pageSelectNone': 'selectNone',
+    'downloadPage': 'downloadResources',
+    'networkImageList': 'resourceList',
+    'networkCount': 'resourceCount',
+    'networkSelectControls': 'selectControls',
+    'networkSelectedCount': 'selectedCount',
+    'networkSelectAll': 'selectAll',
+    'networkSelectNone': 'selectNone',
+    'downloadNetwork': 'downloadResources'
+};
+
+// 重写 getElementById 以支持旧版ID
+const originalGetElementById = document.getElementById.bind(document);
+document.getElementById = function(id) {
+    let el = originalGetElementById(id);
+    if (!el && legacyMappings[id]) {
+        el = originalGetElementById(legacyMappings[id]);
+    }
+    return el;
+};
+
+// 兼容旧版标签页切换
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
         
-        const listEl = document.getElementById('networkImageList');
-        const countEl = document.getElementById('networkCount');
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
         
-        countEl.textContent = resources.length;
-        
-        if (resources.length === 0) {
-            listEl.innerHTML = '<p style="text-align: center; color: #999; font-size: 12px;">暂无捕获的资源</p>';
-            return;
-        }
-        
-        // 按类别分组显示
-        const grouped = {
-            image: resources.filter(r => r.category === 'image' || !r.category),
-            video: resources.filter(r => r.category === 'video'),
-            audio: resources.filter(r => r.category === 'audio'),
-            media: resources.filter(r => r.category === 'media')
-        };
-        
-        let html = '';
-        
-        // 显示各类别
-        Object.entries(grouped).forEach(([category, items]) => {
-            if (items.length === 0) return;
-            
-            const categoryNames = { image: '🖼️ 图片', video: '🎬 视频', audio: '🎵 音频', media: '📦 其他媒体' };
-            html += `<div style="font-weight: bold; margin: 10px 0 5px; color: #667eea; font-size: 12px;">${categoryNames[category]} (${items.length})</div>`;
-            
-            items.forEach((res, index) => {
-                const filename = res.url.split('/').pop().split('?')[0] || `resource_${index}`;
-                const sizeText = res.size > 0 ? formatBytes(res.size) : '未知';
-                const typeText = (res.type || 'unknown').toUpperCase();
-                
-                // 根据类型显示不同的预览
-                let previewHtml = '';
-                if (category === 'image' || !res.category) {
-                    previewHtml = `<img src="${res.url}" alt="" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2240%22><rect fill=%22%23ddd%22 width=%2240%22 height=%2240%22/><text x=%2250%%22 y=%2250%%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23999%22 font-size=%2212%22>?</text></svg>'">`;
-                } else if (category === 'video') {
-                    previewHtml = `<div style="width: 40px; height: 40px; background: #f0f0f0; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 20px;">🎬</div>`;
-                } else if (category === 'audio') {
-                    previewHtml = `<div style="width: 40px; height: 40px; background: #f0f0f0; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 20px;">🎵</div>`;
-                } else {
-                    previewHtml = `<div style="width: 40px; height: 40px; background: #f0f0f0; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 20px;">📦</div>`;
-                }
-                
-                html += `
-                    <div class="network-image-item">
-                        ${previewHtml}
-                        <div class="network-image-info">
-                            <div class="network-image-url" title="${res.url}">${filename}</div>
-                            <div class="network-image-meta">
-                                ${typeText} · ${sizeText}
-                            </div>
-                        </div>
-                    </div>
-                `;
-            });
+        document.querySelectorAll('.tab-content').forEach(content => {
+            content.classList.remove('active');
         });
+        const tabContent = document.getElementById(tab + 'Tab');
+        if (tabContent) tabContent.classList.add('active');
         
-        listEl.innerHTML = html;
-        
-    } catch (error) {
-        console.error('更新列表失败:', error);
-    }
-}
-
-// 兼容旧版函数名
-const updateNetworkImageList = updateNetworkResourceList;
-
-// 获取图片实际尺寸
-function getImageDimensions(url) {
-    return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-            resolve({ width: img.naturalWidth, height: img.naturalHeight });
-        };
-        img.onerror = () => {
-            resolve({ width: 0, height: 0 });
-        };
-        img.src = url;
-        
-        // 超时处理
-        setTimeout(() => {
-            resolve({ width: 0, height: 0 });
-        }, 3000);
+        // 映射到新版模式
+        const modeMap = { 'page': 'current', 'network': 'network' };
+        if (modeMap[tab]) {
+            switchToMode(modeMap[tab]);
+        }
     });
-}
-
-// 格式化字节大小
-function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-}
-
-// 下载Network捕获的资源
-document.getElementById('downloadNetwork').addEventListener('click', async () => {
-    try {
-        const response = await chrome.runtime.sendMessage({ action: 'getCapturedResources' });
-        const resources = response.resources || response.images || [];
-        
-        if (resources.length === 0) {
-            showStatus('没有可下载的资源', 'error');
-            return;
-        }
-        
-        showStatus(`开始下载 ${resources.length} 个资源...`, 'info');
-        updateStats(resources.length, 0);
-        
-        // 生成本次下载的时间戳目录
-        const timestamp = generateTimestampFolder();
-        
-        // 下载资源
-        let downloaded = 0;
-        for (let i = 0; i < resources.length; i++) {
-            try {
-                const filename = resources[i].url.split('/').pop().split('?')[0] || `resource_${i}.${resources[i].type || 'bin'}`;
-                
-                await chrome.runtime.sendMessage({
-                    action: 'download',
-                    url: resources[i].url,
-                    filename: filename,
-                    timestamp: timestamp
-                });
-                
-                downloaded++;
-                updateStats(resources.length, downloaded);
-                updateProgress(downloaded, resources.length);
-            } catch (error) {
-                console.error('下载失败:', error);
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-        showStatus(`成功下载 ${downloaded} 个资源到 resources/${timestamp}/ 目录！`, 'success');
-        
-    } catch (error) {
-        console.error('下载失败:', error);
-        showStatus('下载失败: ' + error.message, 'error');
-    }
 });

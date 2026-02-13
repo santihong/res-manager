@@ -17,6 +17,12 @@ let monitoringFilters = {
 // 面板模式设置
 let useSidePanel = true; // 默认使用侧边栏模式
 
+// 标记状态是否已从 storage 恢复
+let stateRestored = false;
+
+// 待处理的请求队列（在状态恢复前缓存）
+const pendingRequests = [];
+
 // 初始化侧边栏设置
 async function initSidePanel() {
     try {
@@ -31,28 +37,49 @@ async function initSidePanel() {
 // 执行初始化
 initSidePanel();
 
-// 初始化时从storage恢复状态
-chrome.storage.local.get(['isMonitoring', 'monitoringTabId', 'capturedResources', 'monitoringFilters', 'useSidePanel'], (result) => {
-    if (result.isMonitoring) {
-        isMonitoring = result.isMonitoring;
-        monitoringTabId = result.monitoringTabId;
-        console.log('恢复监听状态:', isMonitoring, monitoringTabId);
+// 初始化时从storage恢复状态（立即执行）
+async function restoreState() {
+    try {
+        const result = await chrome.storage.local.get(['isMonitoring', 'monitoringTabId', 'capturedResources', 'monitoringFilters', 'useSidePanel']);
+        
+        if (result.isMonitoring) {
+            isMonitoring = result.isMonitoring;
+            monitoringTabId = result.monitoringTabId;
+            console.log('恢复监听状态:', isMonitoring, monitoringTabId);
+        }
+        if (result.capturedResources) {
+            result.capturedResources.forEach(item => {
+                capturedResources.set(item.url, item);
+            });
+            console.log('恢复捕获数据:', capturedResources.size, '条');
+        }
+        if (result.monitoringFilters) {
+            monitoringFilters = result.monitoringFilters;
+            console.log('恢复过滤器设置:', monitoringFilters);
+        }
+        // 恢复面板模式设置并更新行为
+        useSidePanel = result.useSidePanel !== false; // 默认为true
+        updatePanelBehavior(useSidePanel);
+        console.log('面板模式:', useSidePanel ? '侧边栏' : '弹出窗口');
+        
+        // 标记状态已恢复
+        stateRestored = true;
+        
+        // 处理在状态恢复前缓存的请求
+        if (pendingRequests.length > 0) {
+            console.log('处理缓存的请求:', pendingRequests.length, '条');
+            pendingRequests.forEach(details => processRequest(details));
+            pendingRequests.length = 0;
+        }
+        
+    } catch (error) {
+        console.error('恢复状态失败:', error);
+        stateRestored = true; // 即使失败也标记为已恢复，避免请求一直被缓存
     }
-    if (result.capturedResources) {
-        result.capturedResources.forEach(item => {
-            capturedResources.set(item.url, item);
-        });
-        console.log('恢复捕获数据:', capturedResources.size, '条');
-    }
-    if (result.monitoringFilters) {
-        monitoringFilters = result.monitoringFilters;
-        console.log('恢复过滤器设置:', monitoringFilters);
-    }
-    // 恢复面板模式设置并更新行为
-    useSidePanel = result.useSidePanel !== false; // 默认为true
-    updatePanelBehavior(useSidePanel);
-    console.log('面板模式:', useSidePanel ? '侧边栏' : '弹出窗口');
-});
+}
+
+// 立即执行状态恢复
+restoreState();
 
 // 更新面板行为
 async function updatePanelBehavior(useSidePanel) {
@@ -171,6 +198,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ success: true });
         return true;
     }
+    
+    if (request.action === 'openDownloadFolder') {
+        openDownloadFolder()
+            .then(() => sendResponse({ success: true }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
+    }
+    
+    // 代理请求URL（用于跨域场景）
+    if (request.action === 'fetchUrl') {
+        fetchUrlContent(request.url)
+            .then(html => sendResponse({ html: html }))
+            .catch(error => sendResponse({ error: error.message }));
+        return true;
+    }
+    
+    // 获取资源 Blob（用于跨域资源打包下载）
+    if (request.action === 'fetchBlob') {
+        fetchBlobContent(request.url)
+            .then(result => sendResponse(result))
+            .catch(error => sendResponse({ error: error.message }));
+        return true;
+    }
 });
 
 // 开始监听Network请求
@@ -191,6 +241,67 @@ function stopMonitoring() {
     monitoringTabId = null;
     saveState();
     console.log('停止监听Network请求');
+}
+
+// 获取URL内容（用于跨域场景）
+async function fetchUrlContent(url) {
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        return await response.text();
+    } catch (error) {
+        console.error('获取URL内容失败:', error);
+        throw error;
+    }
+}
+
+// 获取资源 Blob 内容（用于跨域资源打包下载）
+async function fetchBlobContent(url) {
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const blob = await response.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+        const base64 = arrayBufferToBase64(arrayBuffer);
+        
+        return {
+            data: base64,
+            type: blob.type
+        };
+    } catch (error) {
+        console.error('获取Blob内容失败:', error);
+        throw error;
+    }
+}
+
+// ArrayBuffer 转 Base64
+function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
 }
 
 // 检查URL是否匹配过滤器
@@ -291,61 +402,76 @@ function getImageType(url) {
     return getResourceFormat(url, null);
 }
 
+// 处理单个请求（核心逻辑）
+function processRequest(details) {
+    if (!isMonitoring || details.tabId !== monitoringTabId) return;
+    
+    const url = details.url;
+    
+    // 避免重复
+    if (capturedResources.has(url)) return;
+    
+    // 获取Content-Type
+    let contentType = '';
+    if (details.responseHeaders) {
+        const ctHeader = details.responseHeaders.find(
+            h => h.name.toLowerCase() === 'content-type'
+        );
+        if (ctHeader) {
+            contentType = ctHeader.value.toLowerCase();
+        }
+    }
+    
+    // 检查是否匹配过滤器
+    if (!matchesFilter(url, contentType)) return;
+    
+    // 获取资源类型和格式
+    const category = getResourceCategory(url, contentType);
+    const format = getResourceFormat(url, contentType);
+    
+    // 尝试从响应头获取大小
+    let size = 0;
+    if (details.responseHeaders) {
+        const contentLength = details.responseHeaders.find(
+            h => h.name.toLowerCase() === 'content-length'
+        );
+        if (contentLength) {
+            size = parseInt(contentLength.value);
+        }
+    }
+    
+    // 存储资源信息
+    const resourceInfo = {
+        url: url,
+        type: format,
+        category: category,
+        size: size,
+        timestamp: Date.now(),
+        statusCode: details.statusCode,
+        method: details.method,
+        contentType: contentType
+    };
+    
+    capturedResources.set(url, resourceInfo);
+    saveState();
+    
+    console.log('捕获资源:', category, format, url);
+}
+
 // 监听网络请求（图片类型）
 chrome.webRequest.onCompleted.addListener(
     (details) => {
-        if (!isMonitoring || details.tabId !== monitoringTabId) return;
-        
-        const url = details.url;
-        
-        // 避免重复
-        if (capturedResources.has(url)) return;
-        
-        // 获取Content-Type
-        let contentType = '';
-        if (details.responseHeaders) {
-            const ctHeader = details.responseHeaders.find(
-                h => h.name.toLowerCase() === 'content-type'
-            );
-            if (ctHeader) {
-                contentType = ctHeader.value.toLowerCase();
+        // 如果状态还未恢复，先缓存请求
+        if (!stateRestored) {
+            // 只缓存可能是资源的请求（避免缓存太多无关请求）
+            const url = details.url.toLowerCase();
+            if (/\.(jpe?g|png|gif|webp|svg|bmp|ico|mp4|webm|m3u8|flv|avi|mov|mp3|wav|ogg|aac|flac)([?#!@_]|$)/i.test(url)) {
+                pendingRequests.push(details);
             }
+            return;
         }
         
-        // 检查是否匹配过滤器
-        if (!matchesFilter(url, contentType)) return;
-        
-        // 获取资源类型和格式
-        const category = getResourceCategory(url, contentType);
-        const format = getResourceFormat(url, contentType);
-        
-        // 尝试从响应头获取大小
-        let size = 0;
-        if (details.responseHeaders) {
-            const contentLength = details.responseHeaders.find(
-                h => h.name.toLowerCase() === 'content-length'
-            );
-            if (contentLength) {
-                size = parseInt(contentLength.value);
-            }
-        }
-        
-        // 存储资源信息
-        const resourceInfo = {
-            url: url,
-            type: format,
-            category: category,
-            size: size,
-            timestamp: Date.now(),
-            statusCode: details.statusCode,
-            method: details.method,
-            contentType: contentType
-        };
-        
-        capturedResources.set(url, resourceInfo);
-        saveState();
-        
-        console.log('捕获资源:', category, format, url);
+        processRequest(details);
     },
     { 
         urls: ["<all_urls>"],
@@ -361,12 +487,16 @@ async function downloadResource(url, filename, timestamp) {
         const folder = timestamp ? `resources/${timestamp}` : 'resources';
         
         // 使用chrome.downloads API下载
-        await chrome.downloads.download({
+        const downloadId = await chrome.downloads.download({
             url: url,
             filename: `${folder}/${filename}`,
             conflictAction: 'uniquify', // 如果文件名冲突，自动重命名
             saveAs: false // 不显示保存对话框
         });
+        
+        // 记录最后下载的文件ID
+        lastDownloadId = downloadId;
+        
     } catch (error) {
         console.error('下载失败:', url, error);
         throw error;
@@ -376,6 +506,45 @@ async function downloadResource(url, filename, timestamp) {
 // 兼容旧版downloadImage函数
 async function downloadImage(url, filename, timestamp) {
     return downloadResource(url, filename, timestamp);
+}
+
+// 记录最后下载的文件ID
+let lastDownloadId = null;
+
+// 打开下载文件夹
+async function openDownloadFolder() {
+    try {
+        // 方法1: 如果有最近下载的文件，在文件管理器中显示它
+        if (lastDownloadId) {
+            await chrome.downloads.show(lastDownloadId);
+            return;
+        }
+        
+        // 方法2: 查找最近下载的文件并显示
+        const downloads = await chrome.downloads.search({
+            limit: 1,
+            orderBy: ['-startTime'],
+            filenameRegex: '.*resources.*'  // 只查找我们下载的资源
+        });
+        
+        if (downloads.length > 0) {
+            await chrome.downloads.show(downloads[0].id);
+            return;
+        }
+        
+        // 方法3: 打开默认下载文件夹
+        // 注意：Chrome 没有直接打开下载文件夹的 API，
+        // 但我们可以通过 showDefaultFolder 来实现（仅在某些版本可用）
+        if (chrome.downloads.showDefaultFolder) {
+            chrome.downloads.showDefaultFolder();
+            return;
+        }
+        
+        throw new Error('没有找到已下载的文件');
+    } catch (error) {
+        console.error('打开文件夹失败:', error);
+        throw error;
+    }
 }
 
 // 监听下载完成事件（可选，用于统计）

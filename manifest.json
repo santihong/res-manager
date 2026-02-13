@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "媒体资源下载器",
-  "version": "2.2.0",
-  "description": "自动下载当前页面或指定页面的图片、视频、音频等媒体资源，支持时间戳目录管理和Network监听，监听数据持久化",
+  "version": "2.9.1",
+  "description": "自动下载当前页面或指定页面的图片、视频、音频、文档等资源，支持缩略图预览、选择性下载和Network监听",
   "permissions": [
     "activeTab",
+    "tabs",
     "downloads",
     "storage",
     "scripting",
