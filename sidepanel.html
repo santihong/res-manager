@@ -407,12 +407,115 @@
 
         /* 资源列表样式 */
         .resource-list {
+            min-height: 40px;
             max-height: 250px;
             overflow-y: auto;
             border: 1px solid #e0e0e0;
             border-radius: 6px;
             padding: 8px;
             background: #fafafa;
+            transition: height 0.1s ease;
+        }
+        
+        /* 有资源时才设置固定高度 */
+        .resource-list.has-resources {
+            height: 250px;
+        }
+
+        /* 拖拽调整高度的手柄 */
+        .resize-handle {
+            height: 8px;
+            background: linear-gradient(to bottom, #e0e0e0 2px, transparent 2px, transparent 4px, #e0e0e0 4px);
+            background-size: 100% 6px;
+            cursor: ns-resize;
+            border-radius: 4px;
+            margin: 4px 0;
+            opacity: 0.6;
+            transition: opacity 0.2s;
+        }
+
+        .resize-handle:hover {
+            opacity: 1;
+            background: linear-gradient(to bottom, #667eea 2px, transparent 2px, transparent 4px, #667eea 4px);
+            background-size: 100% 6px;
+        }
+
+        /* 扩展按钮 */
+        .expand-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #666;
+            transition: all 0.2s;
+        }
+
+        .expand-btn:hover {
+            background: #e8e8e8;
+            color: #333;
+        }
+
+        /* 大面板模式 - 侧边栏内全屏 */
+        .resource-list.expanded {
+            position: fixed !important;
+            top: 10px !important;
+            left: 10px !important;
+            right: 10px !important;
+            bottom: 10px !important;
+            width: calc(100% - 20px) !important;
+            height: calc(100% - 20px) !important;
+            max-width: none !important;
+            max-height: none !important;
+            min-width: auto !important;
+            min-height: auto !important;
+            z-index: 1000;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+            border: 2px solid #667eea;
+            border-radius: 12px;
+            background: white;
+            overflow-y: auto;
+        }
+
+        /* 大面板遮罩 */
+        .panel-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+
+        .panel-overlay.visible {
+            display: block;
+        }
+
+        /* 大面板关闭按钮 */
+        .close-expanded-btn {
+            display: none;
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1001;
+            background: #ff5757;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            font-size: 20px;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+
+        .close-expanded-btn.visible {
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .resource-category {
@@ -766,16 +869,24 @@
             <div class="section" style="margin-top: 12px;">
                 <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
                     <span>📋 已发现 (<span id="resourceCount">0</span>)</span>
-                    <span class="select-controls" id="selectControls" style="display: none;">
-                        <a href="javascript:void(0)" id="selectAll" class="select-link">全选</a>
-                        <span style="color: #ccc; margin: 0 4px;">|</span>
-                        <a href="javascript:void(0)" id="selectNone" class="select-link">全不选</a>
+                    <span style="display: flex; align-items: center; gap: 8px;">
+                        <span class="select-controls" id="selectControls" style="display: none;">
+                            <a href="javascript:void(0)" id="selectAll" class="select-link">全选</a>
+                            <span style="color: #ccc; margin: 0 4px;">|</span>
+                            <a href="javascript:void(0)" id="selectNone" class="select-link">全不选</a>
+                        </span>
+                        <button class="expand-btn" id="expandPanelBtn" title="展开大面板">⛶</button>
                     </span>
                 </div>
                 <div id="resourceList" class="resource-list">
                     <p style="text-align: center; color: #999; font-size: 11px;">点击"扫描资源"开始</p>
                 </div>
+                <div class="resize-handle" id="resizeHandle" title="拖拽调整高度"></div>
             </div>
+            
+            <!-- 大面板遮罩 -->
+            <div class="panel-overlay" id="panelOverlay"></div>
+            <button class="close-expanded-btn" id="closeExpandedBtn">✕</button>
             
             <!-- 统一的下载按钮 -->
             <button class="btn btn-primary" id="downloadResources" style="margin-top: 8px;">
@@ -796,7 +907,38 @@
         
         <!-- 设置面板（移到底部） -->
         <div class="settings-panel" style="margin-top: 16px;">
-            <div class="settings-title">⚙️ 面板设置</div>
+            <div class="settings-title">⚙️ 下载设置</div>
+            
+            <!-- 格式转换设置 -->
+            <div class="switch-container">
+                <span class="switch-label">自动转换特殊格式图片</span>
+                <label class="switch">
+                    <input type="checkbox" id="convertFormat" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div id="convertOptions" style="margin-top: 8px; padding-left: 8px;">
+                <div style="font-size: 11px; color: #666; margin-bottom: 6px;">
+                    将 AVIF、WebP、SVG 等格式转换为：
+                </div>
+                <div style="display: flex; gap: 12px;">
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer;">
+                        <input type="radio" name="targetFormat" value="png" checked>
+                        <span>PNG (无损)</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer;">
+                        <input type="radio" name="targetFormat" value="jpg">
+                        <span>JPG (更小)</span>
+                    </label>
+                </div>
+                <div style="font-size: 10px; color: #999; margin-top: 6px;">
+                    支持转换：avif, webp, svg, bmp, ico, tiff
+                </div>
+            </div>
+            
+            <div style="border-top: 1px solid #eee; margin: 12px 0;"></div>
+            
+            <div class="settings-title" style="margin-top: 0;">⚙️ 面板设置</div>
             <div class="switch-container">
                 <span class="switch-label">侧边栏模式（点击页面不隐藏）</span>
                 <label class="switch">

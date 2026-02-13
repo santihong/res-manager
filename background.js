@@ -127,7 +127,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 // 监听来自popup的消息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'download') {
-        downloadResource(request.url, request.filename, request.timestamp)
+        downloadResource(request.url, request.filename, request.timestamp, request.convert, request.targetFormat)
             .then(() => sendResponse({ success: true }))
             .catch(error => sendResponse({ success: false, error: error.message }));
         return true; // 保持消息通道开放
@@ -343,7 +343,7 @@ function getResourceCategory(url, contentType) {
     
     // 根据URL扩展名判断
     // 图片
-    if (/\.(jpe?g|png|gif|webp|svg|bmp|ico)(\?|$)/i.test(urlLower)) return 'image';
+    if (/\.(jpe?g|png|gif|webp|avif|svg|bmp|ico|tiff?)(\?|$)/i.test(urlLower)) return 'image';
     // 视频
     if (/\.(mp4|webm|m3u8|ts|flv|avi|mov|mkv|wmv)(\?|$)/i.test(urlLower)) return 'video';
     // 音频
@@ -361,9 +361,11 @@ function getResourceFormat(url, contentType) {
     if (/\.png(\?|$)/i.test(urlLower)) return 'png';
     if (/\.gif(\?|$)/i.test(urlLower)) return 'gif';
     if (/\.webp(\?|$)/i.test(urlLower)) return 'webp';
+    if (/\.avif(\?|$)/i.test(urlLower)) return 'avif';
     if (/\.svg(\?|$)/i.test(urlLower)) return 'svg';
     if (/\.bmp(\?|$)/i.test(urlLower)) return 'bmp';
     if (/\.ico(\?|$)/i.test(urlLower)) return 'ico';
+    if (/\.tiff?(\?|$)/i.test(urlLower)) return 'tiff';
     
     // 视频格式
     if (/\.mp4(\?|$)/i.test(urlLower)) return 'mp4';
@@ -388,7 +390,10 @@ function getResourceFormat(url, contentType) {
         if (contentType.includes('png')) return 'png';
         if (contentType.includes('gif')) return 'gif';
         if (contentType.includes('webp')) return 'webp';
+        if (contentType.includes('avif')) return 'avif';
         if (contentType.includes('svg')) return 'svg';
+        if (contentType.includes('bmp')) return 'bmp';
+        if (contentType.includes('tiff')) return 'tiff';
         if (contentType.includes('mp4')) return 'mp4';
         if (contentType.includes('webm')) return 'webm';
         if (contentType.includes('mp3') || contentType.includes('mpeg')) return 'mp3';
@@ -404,9 +409,15 @@ function getImageType(url) {
 
 // 处理单个请求（核心逻辑）
 function processRequest(details) {
-    if (!isMonitoring || details.tabId !== monitoringTabId) return;
+    if (!isMonitoring) return;
+    
+    // 允许 tabId 为 -1（某些资源加载可能没有关联到具体标签页）
+    if (monitoringTabId !== null && details.tabId !== -1 && details.tabId !== monitoringTabId) return;
     
     const url = details.url;
+    
+    // 过滤掉 data: 和 blob: URL
+    if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('chrome-extension:')) return;
     
     // 避免重复
     if (capturedResources.has(url)) return;
@@ -455,7 +466,7 @@ function processRequest(details) {
     capturedResources.set(url, resourceInfo);
     saveState();
     
-    console.log('捕获资源:', category, format, url);
+    console.log('捕获资源:', category, format, url.substring(0, 80) + '...');
 }
 
 // 监听网络请求（图片类型）
@@ -465,7 +476,7 @@ chrome.webRequest.onCompleted.addListener(
         if (!stateRestored) {
             // 只缓存可能是资源的请求（避免缓存太多无关请求）
             const url = details.url.toLowerCase();
-            if (/\.(jpe?g|png|gif|webp|svg|bmp|ico|mp4|webm|m3u8|flv|avi|mov|mp3|wav|ogg|aac|flac)([?#!@_]|$)/i.test(url)) {
+            if (/\.(jpe?g|png|gif|webp|avif|svg|bmp|ico|tiff?|mp4|webm|m3u8|ts|flv|avi|mov|mkv|mp3|wav|ogg|aac|flac|m4a)([?#!@_]|$)/i.test(url)) {
                 pendingRequests.push(details);
             }
             return;
@@ -480,25 +491,213 @@ chrome.webRequest.onCompleted.addListener(
     ["responseHeaders"]
 );
 
+// 额外监听 onResponseStarted 事件（某些资源在 onCompleted 前可能丢失）
+chrome.webRequest.onResponseStarted.addListener(
+    (details) => {
+        // 立即处理，不等待 onCompleted
+        if (!stateRestored) return;
+        
+        // 只处理 200 状态的请求
+        if (details.statusCode !== 200) return;
+        
+        processRequest(details);
+    },
+    { 
+        urls: ["<all_urls>"],
+        types: ["image", "media"]
+    },
+    ["responseHeaders"]
+);
+
+// 将图片转换为指定格式（使用 Canvas）
+async function convertImageFormat(url, targetFormat) {
+    console.log('[格式转换] 开始转换:', { url: url.substring(0, 100), targetFormat });
+    
+    try {
+        // 获取图片数据 - 尝试多种方式
+        let blob;
+        
+        try {
+            // 方式1: 直接 fetch（适用于大多数情况）
+            console.log('[格式转换] 尝试 fetch 获取图片...');
+            const response = await fetch(url, {
+                mode: 'cors',
+                credentials: 'include',
+                headers: {
+                    'Accept': 'image/*,*/*'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            blob = await response.blob();
+            console.log('[格式转换] fetch 成功, blob size:', blob.size, 'type:', blob.type);
+        } catch (fetchError) {
+            console.warn('[格式转换] fetch 失败，尝试无 credentials:', fetchError.message);
+            
+            // 方式2: 不带 credentials 重试
+            const response = await fetch(url, {
+                mode: 'cors',
+                headers: {
+                    'Accept': 'image/*,*/*'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            blob = await response.blob();
+            console.log('[格式转换] 无 credentials fetch 成功, blob size:', blob.size);
+        }
+        
+        if (!blob || blob.size === 0) {
+            throw new Error('获取的图片数据为空');
+        }
+        
+        // 创建 ImageBitmap
+        console.log('[格式转换] 创建 ImageBitmap...');
+        const imageBitmap = await createImageBitmap(blob);
+        console.log('[格式转换] ImageBitmap 创建成功:', imageBitmap.width, 'x', imageBitmap.height);
+        
+        // 创建 OffscreenCanvas
+        const canvas = new OffscreenCanvas(imageBitmap.width, imageBitmap.height);
+        const ctx = canvas.getContext('2d');
+        
+        // 如果是 JPG 格式，先填充白色背景（处理透明图片）
+        if (targetFormat === 'jpg' || targetFormat === 'jpeg') {
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        
+        // 绘制图片
+        ctx.drawImage(imageBitmap, 0, 0);
+        
+        // 转换为目标格式
+        const mimeType = targetFormat === 'jpg' || targetFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+        const quality = targetFormat === 'jpg' || targetFormat === 'jpeg' ? 0.92 : undefined;
+        
+        console.log('[格式转换] 转换为 blob, mimeType:', mimeType);
+        const convertedBlob = await canvas.convertToBlob({ type: mimeType, quality });
+        console.log('[格式转换] 转换后 blob size:', convertedBlob.size, 'type:', convertedBlob.type);
+        
+        // 转换为 Data URL
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                console.log('[格式转换] Data URL 生成成功, 长度:', reader.result?.length);
+                resolve(reader.result);
+            };
+            reader.onerror = (err) => {
+                console.error('[格式转换] FileReader 错误:', err);
+                reject(err);
+            };
+            reader.readAsDataURL(convertedBlob);
+        });
+    } catch (error) {
+        console.error('[格式转换] 转换失败:', error.message, error.stack);
+        throw error;
+    }
+}
+
+// 需要转换的格式列表
+const CONVERTIBLE_FORMATS = ['avif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif'];
+
+// 从 Content-Type 获取格式
+function getFormatFromContentType(contentType) {
+    if (!contentType) return '';
+    const ct = contentType.toLowerCase();
+    
+    if (ct.includes('avif')) return 'avif';
+    if (ct.includes('webp')) return 'webp';
+    if (ct.includes('svg')) return 'svg';
+    if (ct.includes('bmp')) return 'bmp';
+    if (ct.includes('ico') || ct.includes('icon')) return 'ico';
+    if (ct.includes('tiff')) return 'tiff';
+    if (ct.includes('jpeg') || ct.includes('jpg')) return 'jpg';
+    if (ct.includes('png')) return 'png';
+    if (ct.includes('gif')) return 'gif';
+    
+    return '';
+}
+
 // 下载资源
-async function downloadResource(url, filename, timestamp) {
+async function downloadResource(url, filename, timestamp, convert = false, targetFormat = null) {
+    console.log('[下载资源] 参数:', { 
+        url: url.substring(0, 80), 
+        filename, 
+        convert, 
+        targetFormat 
+    });
+    
     try {
         // 使用时间戳作为子目录名
         const folder = timestamp ? `resources/${timestamp}` : 'resources';
         
+        let downloadUrl = url;
+        let finalFilename = filename;
+        let needConvert = convert;
+        let finalTargetFormat = targetFormat;
+        
+        // 如果启用了自动转换，先检测实际的 Content-Type
+        // 因为有些网站（如YouTube）URL后缀是.jpg但实际返回avif
+        if (targetFormat && !convert) {
+            try {
+                console.log('[下载资源] 检测实际 Content-Type...');
+                const headResponse = await fetch(url, { 
+                    method: 'HEAD',
+                    mode: 'cors'
+                });
+                const contentType = headResponse.headers.get('content-type') || '';
+                const actualFormat = getFormatFromContentType(contentType);
+                
+                console.log('[下载资源] 实际 Content-Type:', contentType, '-> 格式:', actualFormat);
+                
+                // 如果实际格式是需要转换的格式
+                if (actualFormat && CONVERTIBLE_FORMATS.includes(actualFormat)) {
+                    console.log('[下载资源] 检测到需要转换的格式:', actualFormat);
+                    needConvert = true;
+                    finalTargetFormat = targetFormat;
+                    // 修正文件名扩展名
+                    finalFilename = filename.replace(/\.[^.]+$/, `.${targetFormat}`);
+                }
+            } catch (headError) {
+                console.warn('[下载资源] HEAD 请求失败，跳过格式检测:', headError.message);
+            }
+        }
+        
+        // 如果需要转换格式
+        if (needConvert && finalTargetFormat) {
+            try {
+                console.log(`[下载资源] 开始转换格式: -> ${finalTargetFormat}`);
+                downloadUrl = await convertImageFormat(url, finalTargetFormat);
+                console.log('[下载资源] 格式转换成功，使用 Data URL 下载');
+            } catch (convertError) {
+                console.warn('[下载资源] 格式转换失败，使用原始URL下载:', convertError.message);
+                downloadUrl = url;
+                finalFilename = filename; // 恢复原始文件名
+            }
+        } else {
+            console.log('[下载资源] 无需转换格式，直接下载原始文件');
+        }
+        
         // 使用chrome.downloads API下载
         const downloadId = await chrome.downloads.download({
-            url: url,
-            filename: `${folder}/${filename}`,
+            url: downloadUrl,
+            filename: `${folder}/${finalFilename}`,
             conflictAction: 'uniquify', // 如果文件名冲突，自动重命名
             saveAs: false // 不显示保存对话框
         });
+        
+        console.log('[下载资源] 下载已开始, downloadId:', downloadId, '文件名:', finalFilename);
         
         // 记录最后下载的文件ID
         lastDownloadId = downloadId;
         
     } catch (error) {
-        console.error('下载失败:', url, error);
+        console.error('[下载资源] 下载失败:', url, error);
         throw error;
     }
 }

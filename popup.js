@@ -281,12 +281,29 @@ function renderResourceList() {
         if (selectControlsEl) selectControlsEl.style.display = 'none';
         if (selectedCountEl) selectedCountEl.textContent = '0';
         
+        // 没有资源时移除固定高度类和内联样式
+        listEl.classList.remove('has-resources');
+        listEl.style.height = '';
+        listEl.style.maxHeight = '';
+        listEl.style.minHeight = '';
+        
         const emptyMessage = currentMode === 'network' 
             ? '暂无发现的资源' 
             : '点击"扫描资源"开始';
-        listEl.innerHTML = `<p style="text-align: center; color: #999; font-size: 11px;">${emptyMessage}</p>`;
+        listEl.innerHTML = `<p style="text-align: center; color: #999; font-size: 11px; margin: 8px 0;">${emptyMessage}</p>`;
         return;
     }
+    
+    // 有资源时添加固定高度类，并恢复保存的高度
+    listEl.classList.add('has-resources');
+    
+    // 恢复保存的高度
+    chrome.storage.local.get('resourceListHeight', (result) => {
+        if (result.resourceListHeight && listEl.classList.contains('has-resources')) {
+            listEl.style.height = result.resourceListHeight + 'px';
+            listEl.style.maxHeight = result.resourceListHeight + 'px';
+        }
+    });
     
     // 显示全选控制
     if (selectControlsEl) selectControlsEl.style.display = 'inline';
@@ -847,15 +864,31 @@ function extractResourcesFromHtml(html, baseUrl, minSize) {
 // ========== 网络监听功能 ==========
 async function initNetworkMonitorState() {
     try {
+        // 先清除可能存在的旧轮询
+        if (monitoringInterval) {
+            clearInterval(monitoringInterval);
+            monitoringInterval = null;
+        }
+        
         const response = await chrome.runtime.sendMessage({ action: 'getMonitoringStatus' });
+        
+        if (!response) {
+            console.warn('获取监听状态：无响应');
+            return;
+        }
+        
+        console.log('监听状态:', response);
         
         if (response.isMonitoring) {
             isMonitoring = true;
             updateMonitoringUI(true);
-            showStatus('正在监听网络请求...', 'info');
+            showStatus(`正在监听... 已捕获 ${response.count || 0} 个资源`, 'info');
             
-            // 启动轮询
-            monitoringInterval = setInterval(refreshNetworkResources, 1000);
+            // 启动轮询（确保只有一个轮询在运行）
+            if (!monitoringInterval) {
+                monitoringInterval = setInterval(refreshNetworkResources, 800);
+                console.log('启动轮询定时器（800ms）');
+            }
         }
         
         // 恢复已捕获的资源
@@ -875,7 +908,19 @@ async function initNetworkMonitorState() {
 async function refreshNetworkResources() {
     try {
         const response = await chrome.runtime.sendMessage({ action: 'getCapturedResources' });
+        
+        if (!response) {
+            console.warn('获取捕获资源：无响应，可能是 Service Worker 休眠');
+            // 尝试唤醒 Service Worker
+            await chrome.runtime.sendMessage({ action: 'getMonitoringStatus' });
+            return;
+        }
+        
         const resources = response.resources || [];
+        
+        // 检查是否有新资源
+        const newCount = resources.length;
+        const oldCount = allResources.length;
         
         // 更新资源列表
         allResources = resources.map(r => ({
@@ -884,9 +929,51 @@ async function refreshNetworkResources() {
             format: r.type
         }));
         
-        filterAndRenderResources();
+        // 只在有变化时重新渲染
+        if (newCount !== oldCount) {
+            console.log(`资源列表更新: ${oldCount} -> ${newCount}`);
+            filterAndRenderResources();
+            
+            // 更新状态提示
+            if (isMonitoring) {
+                showStatus(`正在监听... 已捕获 ${newCount} 个资源`, 'info');
+            }
+        }
+        
+        // 同步监听状态
+        if (response.isMonitoring !== undefined && response.isMonitoring !== isMonitoring) {
+            isMonitoring = response.isMonitoring;
+            updateMonitoringUI(isMonitoring);
+            
+            // 如果后台显示正在监听但前端轮询已停止，重启轮询
+            if (isMonitoring && !monitoringInterval) {
+                console.log('检测到监听中但轮询已停止，重启轮询');
+                monitoringInterval = setInterval(refreshNetworkResources, 1000);
+            }
+        }
+        
     } catch (error) {
         console.error('获取捕获资源失败:', error);
+        
+        // 如果是连接错误，尝试重新建立连接
+        if (error.message?.includes('Could not establish connection') || 
+            error.message?.includes('Extension context invalidated')) {
+            console.log('Service Worker 可能休眠，等待重试...');
+            
+            // 尝试重启轮询
+            if (isMonitoring && currentMode === 'network') {
+                if (monitoringInterval) {
+                    clearInterval(monitoringInterval);
+                }
+                // 延迟 2 秒后重新启动轮询
+                setTimeout(() => {
+                    if (isMonitoring && currentMode === 'network' && !monitoringInterval) {
+                        console.log('重新启动轮询定时器');
+                        monitoringInterval = setInterval(refreshNetworkResources, 1000);
+                    }
+                }, 2000);
+            }
+        }
     }
 }
 
@@ -902,11 +989,23 @@ async function startMonitoring() {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         
-        await chrome.runtime.sendMessage({
+        if (!tab || !tab.id) {
+            showStatus('无法获取当前标签页', 'error');
+            return;
+        }
+        
+        console.log('启动监听，Tab ID:', tab.id, 'URL:', tab.url);
+        
+        const response = await chrome.runtime.sendMessage({
             action: 'startMonitoring',
             tabId: tab.id,
             filters: filters
         });
+        
+        if (!response || !response.success) {
+            showStatus('启动监听失败', 'error');
+            return;
+        }
         
         isMonitoring = true;
         updateMonitoringUI(true);
@@ -919,8 +1018,12 @@ async function startMonitoring() {
         manualClear = false;
         renderResourceList();
         
-        // 启动轮询
-        monitoringInterval = setInterval(refreshNetworkResources, 1000);
+        // 启动轮询（先清除旧的）
+        if (monitoringInterval) {
+            clearInterval(monitoringInterval);
+        }
+        monitoringInterval = setInterval(refreshNetworkResources, 800); // 缩短轮询间隔
+        console.log('监听已启动，轮询定时器已设置（800ms）');
         
     } catch (error) {
         console.error('启动监听失败:', error);
@@ -977,7 +1080,158 @@ function updateMonitoringUI(monitoring) {
     }
 }
 
+// ========== 格式转换设置 ==========
+// 需要转换的格式列表
+const CONVERTIBLE_FORMATS = ['avif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif'];
+
+// 获取格式转换设置
+function getConvertSettings() {
+    const convertCheckbox = document.getElementById('convertFormat');
+    const targetRadio = document.querySelector('input[name="targetFormat"]:checked');
+    
+    // 调试日志
+    console.log('convertFormat checkbox:', convertCheckbox, 'checked:', convertCheckbox?.checked);
+    console.log('targetFormat radio:', targetRadio, 'value:', targetRadio?.value);
+    
+    const convertEnabled = convertCheckbox?.checked ?? true;
+    const targetFormat = targetRadio?.value || 'png';
+    return { convertEnabled, targetFormat };
+}
+
+// 保存格式转换设置
+function saveConvertSettings() {
+    const settings = getConvertSettings();
+    chrome.storage.local.set({ convertSettings: settings });
+}
+
+// 恢复格式转换设置
+async function restoreConvertSettings() {
+    try {
+        const result = await chrome.storage.local.get('convertSettings');
+        console.log('恢复格式转换设置，存储的值:', result.convertSettings);
+        
+        if (result.convertSettings) {
+            const { convertEnabled, targetFormat } = result.convertSettings;
+            const convertCheckbox = document.getElementById('convertFormat');
+            console.log('convertFormat checkbox 元素:', convertCheckbox);
+            
+            if (convertCheckbox) {
+                convertCheckbox.checked = convertEnabled;
+                console.log('设置 convertFormat checked =', convertEnabled);
+            }
+            
+            const targetRadio = document.querySelector(`input[name="targetFormat"][value="${targetFormat}"]`);
+            if (targetRadio) {
+                targetRadio.checked = true;
+                console.log('设置 targetFormat =', targetFormat);
+            }
+            
+            updateConvertOptionsVisibility();
+        } else {
+            // 没有保存的设置，确保默认开启
+            const convertCheckbox = document.getElementById('convertFormat');
+            if (convertCheckbox && !convertCheckbox.checked) {
+                convertCheckbox.checked = true;
+                console.log('默认开启格式转换');
+            }
+        }
+    } catch (error) {
+        console.error('恢复格式转换设置失败:', error);
+    }
+}
+
+// 更新转换选项显示/隐藏
+function updateConvertOptionsVisibility() {
+    const convertEnabled = document.getElementById('convertFormat')?.checked;
+    const convertOptions = document.getElementById('convertOptions');
+    if (convertOptions) {
+        convertOptions.style.display = convertEnabled ? 'block' : 'none';
+    }
+}
+
 // ========== 下载功能（三种模式统一） ==========
+
+// 从 URL 提取格式
+function getFormatFromUrl(url) {
+    try {
+        const pathname = new URL(url).pathname;
+        const filename = pathname.split('/').pop() || '';
+        const cleanFilename = filename.split('?')[0].split('#')[0];
+        const dotIndex = cleanFilename.lastIndexOf('.');
+        if (dotIndex > 0) {
+            let ext = cleanFilename.substring(dotIndex + 1).toLowerCase();
+            if (ext === 'jpeg') ext = 'jpg';
+            if (ext.length > 0 && ext.length <= 5) return ext;
+        }
+    } catch {}
+    return '';
+}
+
+// 从 Content-Type 提取格式
+function getFormatFromContentType(contentType) {
+    if (!contentType) return '';
+    const ct = contentType.toLowerCase();
+    
+    if (ct.includes('avif')) return 'avif';
+    if (ct.includes('webp')) return 'webp';
+    if (ct.includes('svg')) return 'svg';
+    if (ct.includes('bmp')) return 'bmp';
+    if (ct.includes('ico') || ct.includes('icon')) return 'ico';
+    if (ct.includes('tiff')) return 'tiff';
+    if (ct.includes('jpeg') || ct.includes('jpg')) return 'jpg';
+    if (ct.includes('png')) return 'png';
+    if (ct.includes('gif')) return 'gif';
+    if (ct.includes('mp4')) return 'mp4';
+    if (ct.includes('webm')) return 'webm';
+    if (ct.includes('mp3') || ct.includes('mpeg')) return 'mp3';
+    if (ct.includes('ogg')) return 'ogg';
+    if (ct.includes('wav')) return 'wav';
+    
+    return '';
+}
+
+// 综合判断资源格式（优先级：res.format > res.type > contentType > URL）
+function detectResourceFormat(res) {
+    // 1. 优先使用已有的 format 字段
+    let format = (res.format || '').toLowerCase();
+    if (format && format !== 'unknown' && format !== 'other') {
+        return format;
+    }
+    
+    // 2. 检查 type 字段（网络监听模式使用 type 存储格式）
+    format = (res.type || '').toLowerCase();
+    if (format && format !== 'unknown' && format !== 'other' && format !== 'image' && format !== 'video' && format !== 'audio') {
+        return format;
+    }
+    
+    // 3. 从 contentType 判断
+    if (res.contentType) {
+        format = getFormatFromContentType(res.contentType);
+        if (format) return format;
+    }
+    
+    // 4. 从 URL 提取
+    format = getFormatFromUrl(res.url);
+    if (format) return format;
+    
+    // 5. 最后检查 URL 参数中的格式提示
+    try {
+        const urlObj = new URL(res.url);
+        // 检查常见的格式参数
+        const formatParam = urlObj.searchParams.get('format') || 
+                           urlObj.searchParams.get('f') ||
+                           urlObj.searchParams.get('type');
+        if (formatParam) {
+            const fp = formatParam.toLowerCase();
+            if (['avif', 'webp', 'jpg', 'jpeg', 'png', 'gif', 'svg'].includes(fp)) {
+                return fp === 'jpeg' ? 'jpg' : fp;
+            }
+        }
+    } catch {}
+    
+    return '';
+}
+
 async function downloadSelectedResources() {
     const resourcesToDownload = filteredResources.filter((_, idx) => selectedResources.has(idx));
     
@@ -986,24 +1240,69 @@ async function downloadSelectedResources() {
         return;
     }
     
+    // 获取格式转换设置
+    const { convertEnabled, targetFormat } = getConvertSettings();
+    console.log('格式转换设置:', { convertEnabled, targetFormat });
+    console.log('可转换的格式列表:', CONVERTIBLE_FORMATS);
+    
     showStatus(`开始下载 ${resourcesToDownload.length} 个资源...`, 'info');
     
     const timestamp = generateTimestampFolder();
     let downloaded = 0;
+    let converted = 0;
     
     for (let i = 0; i < resourcesToDownload.length; i++) {
         try {
             const res = resourcesToDownload[i];
-            const filename = getFilenameFromUrl(res.url) || `resource_${i}.${res.format || 'bin'}`;
+            let filename = getFilenameFromUrl(res.url) || `resource_${i}.${res.format || 'bin'}`;
             
+            // 使用综合格式检测
+            const format = detectResourceFormat(res);
+            
+            // 调试：打印原始资源数据
+            console.log(`资源 ${i} 原始数据:`, { 
+                'res.format': res.format, 
+                'res.type': res.type,
+                'res.category': res.category,
+                'res.contentType': res.contentType,
+                'detected format': format,
+                url: res.url.substring(0, 100)
+            });
+            
+            // 判断是否需要转换格式
+            const needConvert = convertEnabled && CONVERTIBLE_FORMATS.includes(format);
+            console.log(`资源 ${i}: format=${format}, needConvert=${needConvert}, convertEnabled=${convertEnabled}`);
+            
+            if (needConvert) {
+                // 修改文件扩展名为目标格式
+                const hasExtension = /\.[^.]+$/.test(filename);
+                if (hasExtension) {
+                    filename = filename.replace(/\.[^.]+$/, `.${targetFormat}`);
+                } else {
+                    // 文件名没有扩展名，添加目标格式扩展名
+                    filename = `${filename}.${targetFormat}`;
+                }
+            } else if (!filename.includes('.')) {
+                // 没有扩展名且不需要转换，添加检测到的格式作为扩展名
+                if (format) {
+                    filename = `${filename}.${format}`;
+                }
+            }
+            
+            // 即使 needConvert=false，如果启用了转换设置，也传递 targetFormat
+            // 让 background.js 可以检测实际的 Content-Type 并自动转换
+            // （因为有些网站如YouTube，URL后缀是.jpg但实际返回avif）
             await chrome.runtime.sendMessage({
                 action: 'download',
                 url: res.url,
                 filename: filename,
-                timestamp: timestamp
+                timestamp: timestamp,
+                convert: needConvert,
+                targetFormat: convertEnabled ? targetFormat : null
             });
             
             downloaded++;
+            if (needConvert) converted++;
             updateProgress(downloaded, resourcesToDownload.length);
         } catch (error) {
             console.error('下载失败:', error);
@@ -1012,7 +1311,11 @@ async function downloadSelectedResources() {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
     
-    showStatus(`成功下载 ${downloaded} 个资源到 resources/${timestamp}/ 目录！`, 'success');
+    let message = `成功下载 ${downloaded} 个资源到 resources/${timestamp}/ 目录！`;
+    if (converted > 0) {
+        message += ` (${converted} 个已转换为 ${targetFormat.toUpperCase()})`;
+    }
+    showStatus(message, 'success');
     lastDownloadTimestamp = timestamp;
 }
 
@@ -1023,6 +1326,18 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // 初始化格式过滤器显示
     updateFormatFilterVisibility();
+    
+    // 恢复格式转换设置
+    restoreConvertSettings();
+    
+    // 绑定格式转换设置
+    document.getElementById('convertFormat')?.addEventListener('change', () => {
+        updateConvertOptionsVisibility();
+        saveConvertSettings();
+    });
+    document.querySelectorAll('input[name="targetFormat"]').forEach(radio => {
+        radio.addEventListener('change', saveConvertSettings);
+    });
     
     // 绑定扫描按钮
     document.getElementById('scanPage')?.addEventListener('click', scanResources);
@@ -1072,6 +1387,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (currentMode === 'network') {
         initNetworkMonitorState();
     }
+    
+    // 监听页面可见性变化，恢复轮询
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && currentMode === 'network' && isMonitoring) {
+            console.log('页面恢复可见，检查轮询状态');
+            // 如果轮询已停止，重新启动
+            if (!monitoringInterval) {
+                console.log('重启轮询定时器（800ms）');
+                monitoringInterval = setInterval(refreshNetworkResources, 800);
+            }
+            // 立即刷新一次
+            refreshNetworkResources();
+        }
+    });
 });
 
 // ========== 兼容旧版 ==========
@@ -1124,3 +1453,118 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         }
     });
 });
+
+
+// ========== 资源列表拖拽调整大小 ==========
+(function() {
+    const resizeHandle = document.getElementById('resizeHandle');
+    // 兼容两种 ID
+    const resourceList = document.getElementById('resourceList') || document.getElementById('networkImageList');
+    
+    if (!resizeHandle || !resourceList) return;
+    
+    let isResizing = false;
+    let startY = 0;
+    let startHeight = 0;
+    
+    resizeHandle.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        startY = e.clientY;
+        startHeight = resourceList.offsetHeight;
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        
+        const deltaY = e.clientY - startY;
+        const newHeight = Math.max(100, Math.min(600, startHeight + deltaY));
+        resourceList.style.height = newHeight + 'px';
+        resourceList.style.maxHeight = newHeight + 'px';
+    });
+    
+    document.addEventListener('mouseup', () => {
+        if (isResizing) {
+            isResizing = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            
+            // 保存高度设置
+            const height = resourceList.offsetHeight;
+            chrome.storage.local.set({ resourceListHeight: height });
+        }
+    });
+    
+    // 恢复保存的高度（只在有资源时才应用，由 renderResourceList 控制）
+})();
+
+// ========== 资源列表扩展大面板 ==========
+(function() {
+    const expandBtn = document.getElementById('expandPanelBtn');
+    const closeBtn = document.getElementById('closeExpandedBtn');
+    const overlay = document.getElementById('panelOverlay');
+    // 兼容两种 ID
+    const resourceList = document.getElementById('resourceList') || document.getElementById('networkImageList');
+    
+    if (!expandBtn || !resourceList) return;
+    
+    let isExpanded = false;
+    let savedHeight = '';
+    let savedMaxHeight = '';
+    
+    function expandPanel() {
+        if (isExpanded) return;
+        
+        // 保存当前高度
+        savedHeight = resourceList.style.height;
+        savedMaxHeight = resourceList.style.maxHeight;
+        
+        // 展开面板
+        resourceList.classList.add('expanded');
+        if (overlay) overlay.classList.add('visible');
+        if (closeBtn) closeBtn.classList.add('visible');
+        expandBtn.innerHTML = '⛶';
+        expandBtn.title = '收起面板';
+        isExpanded = true;
+    }
+    
+    function collapsePanel() {
+        if (!isExpanded) return;
+        
+        // 恢复高度
+        resourceList.classList.remove('expanded');
+        resourceList.style.height = savedHeight;
+        resourceList.style.maxHeight = savedMaxHeight;
+        
+        if (overlay) overlay.classList.remove('visible');
+        if (closeBtn) closeBtn.classList.remove('visible');
+        expandBtn.innerHTML = '⛶';
+        expandBtn.title = '展开大面板';
+        isExpanded = false;
+    }
+    
+    expandBtn.addEventListener('click', () => {
+        if (isExpanded) {
+            collapsePanel();
+        } else {
+            expandPanel();
+        }
+    });
+    
+    if (closeBtn) {
+        closeBtn.addEventListener('click', collapsePanel);
+    }
+    
+    if (overlay) {
+        overlay.addEventListener('click', collapsePanel);
+    }
+    
+    // ESC 键关闭
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && isExpanded) {
+            collapsePanel();
+        }
+    });
+})();

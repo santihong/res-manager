@@ -173,6 +173,109 @@
             transition: width 0.3s;
         }
 
+        /* 资源列表拖拽和扩展样式 */
+        .resource-list, #networkImageList {
+            min-height: 40px;
+            max-height: 300px;
+            transition: height 0.1s ease;
+        }
+        
+        /* 有资源时才设置固定高度 */
+        .resource-list.has-resources, #networkImageList.has-resources {
+            height: 250px;
+        }
+
+        .resize-handle {
+            height: 8px;
+            background: linear-gradient(to bottom, #e0e0e0 2px, transparent 2px, transparent 4px, #e0e0e0 4px);
+            background-size: 100% 6px;
+            cursor: ns-resize;
+            border-radius: 4px;
+            margin: 4px 0;
+            opacity: 0.6;
+            transition: opacity 0.2s;
+        }
+
+        .resize-handle:hover {
+            opacity: 1;
+            background: linear-gradient(to bottom, #667eea 2px, transparent 2px, transparent 4px, #667eea 4px);
+            background-size: 100% 6px;
+        }
+
+        .expand-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #666;
+            transition: all 0.2s;
+        }
+
+        .expand-btn:hover {
+            background: #e8e8e8;
+            color: #333;
+        }
+
+        .resource-list.expanded, #networkImageList.expanded {
+            position: fixed !important;
+            top: 10px !important;
+            left: 10px !important;
+            right: 10px !important;
+            bottom: 10px !important;
+            width: calc(100% - 20px) !important;
+            height: calc(100% - 20px) !important;
+            max-width: none !important;
+            max-height: none !important;
+            min-width: auto !important;
+            min-height: auto !important;
+            z-index: 1000;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+            border: 2px solid #667eea;
+            border-radius: 12px;
+            background: white;
+            overflow-y: auto;
+        }
+
+        .panel-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+
+        .panel-overlay.visible {
+            display: block;
+        }
+
+        .close-expanded-btn {
+            display: none;
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1001;
+            background: #ff5757;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            font-size: 20px;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+
+        .close-expanded-btn.visible {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         .tab-buttons {
             display: flex;
             gap: 10px;
@@ -591,11 +694,19 @@
             </div>
 
             <div class="section">
-                <div class="section-title">捕获的资源 (<span id="networkCount">0</span>)</div>
-                <div id="networkImageList" style="max-height: 300px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px;">
+                <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>捕获的资源 (<span id="networkCount">0</span>)</span>
+                    <button class="expand-btn" id="expandPanelBtn" title="展开大面板">⛶</button>
+                </div>
+                <div id="networkImageList" style="overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px;">
                     <p style="text-align: center; color: #999; font-size: 12px;">暂无捕获的资源</p>
                 </div>
+                <div class="resize-handle" id="resizeHandle" title="拖拽调整高度"></div>
             </div>
+            
+            <!-- 大面板遮罩 -->
+            <div class="panel-overlay" id="panelOverlay"></div>
+            <button class="close-expanded-btn" id="closeExpandedBtn">✕</button>
 
             <button class="btn btn-primary" id="downloadNetwork">
                 下载所有捕获的资源
@@ -612,6 +723,33 @@
         <button class="btn btn-secondary" id="openDownloadFolder" style="margin-top: 15px;">
             📂 打开下载文件夹
         </button>
+        
+        <!-- 下载设置面板 -->
+        <div style="margin-top: 16px; padding: 12px; background: #f8f9fa; border-radius: 8px;">
+            <div style="font-weight: 500; font-size: 13px; margin-bottom: 8px;">⚙️ 下载设置</div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="font-size: 12px;">自动转换特殊格式图片</span>
+                <label class="switch" style="position: relative; width: 40px; height: 20px;">
+                    <input type="checkbox" id="convertFormat" checked style="opacity: 0; width: 0; height: 0;">
+                    <span class="slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 20px; transition: .3s;"></span>
+                </label>
+            </div>
+            <div id="convertOptions" style="margin-top: 8px;">
+                <div style="font-size: 11px; color: #666; margin-bottom: 6px;">
+                    将 AVIF、WebP、SVG 等转换为：
+                </div>
+                <div style="display: flex; gap: 12px;">
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer;">
+                        <input type="radio" name="targetFormat" value="png" checked>
+                        <span>PNG</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer;">
+                        <input type="radio" name="targetFormat" value="jpg">
+                        <span>JPG</span>
+                    </label>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="popup.js"></script>
