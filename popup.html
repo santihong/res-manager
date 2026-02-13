@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>媒体资源下载器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            width: 400px;
+            min-height: 500px;
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        h1 {
+            font-size: 20px;
+            color: #333;
+            margin-bottom: 20px;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .section {
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: bold;
+            color: #555;
+            margin-bottom: 10px;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        input[type="text"], input[type="url"] {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 13px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus, input[type="url"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .checkbox-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .checkbox-item label {
+            margin: 0;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 10px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #666;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            text-align: center;
+            margin-top: 15px;
+            display: none;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+            display: none;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        .tab-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.3s;
+        }
+
+        .tab-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .network-image-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 12px;
+        }
+
+        .network-image-item:last-child {
+            border-bottom: none;
+        }
+
+        .network-image-item img {
+            width: 40px;
+            height: 40px;
+            object-fit: cover;
+            border-radius: 4px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .network-image-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .network-image-url {
+            color: #333;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 4px;
+        }
+
+        .network-image-meta {
+            color: #999;
+            font-size: 11px;
+        }
+
+        .network-image-size {
+            color: #667eea;
+            font-weight: 500;
+        }
+
+        /* 设置面板样式 */
+        .settings-panel {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .settings-title {
+            font-size: 13px;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .switch-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px 0;
+        }
+
+        .switch-label {
+            font-size: 12px;
+            color: #555;
+        }
+
+        .switch {
+            position: relative;
+            width: 44px;
+            height: 22px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .3s;
+            border-radius: 22px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(22px);
+        }
+
+        .mode-indicator {
+            text-align: center;
+            font-size: 11px;
+            color: #667eea;
+            padding: 5px;
+            background: #e8ebff;
+            border-radius: 4px;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            <span>📦</span>
+            媒体资源下载器
+        </h1>
+
+        <!-- 设置面板 -->
+        <div class="settings-panel">
+            <div class="settings-title">⚙️ 面板设置</div>
+            <div class="switch-container">
+                <span class="switch-label">侧边栏模式（点击页面不隐藏）</span>
+                <label class="switch">
+                    <input type="checkbox" id="sidePanelMode" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="mode-indicator" id="modeIndicator">
+                当前：侧边栏模式 - 点击页面或刷新不会隐藏
+            </div>
+        </div>
+
+        <div class="tab-buttons">
+            <button class="tab-btn active" data-tab="current">当前页面</button>
+            <button class="tab-btn" data-tab="custom">指定URL</button>
+            <button class="tab-btn" data-tab="network">Network监听</button>
+        </div>
+
+        <div id="currentTab" class="tab-content active">
+            <div class="section">
+                <div class="section-title">图片格式</div>
+                <div class="checkbox-group">
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="jpg" checked>
+                        <label for="jpg">JPG/JPEG</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="png" checked>
+                        <label for="png">PNG</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="gif" checked>
+                        <label for="gif">GIF</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="webp" checked>
+                        <label for="webp">WebP</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="svg" checked>
+                        <label for="svg">SVG</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="bmp">
+                        <label for="bmp">BMP</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="input-group">
+                    <label for="minSize">最小尺寸 (像素)</label>
+                    <input type="text" id="minSize" placeholder="例如: 100 (宽或高大于100px)" value="0">
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="downloadCurrent">
+                下载当前页面图片
+            </button>
+        </div>
+
+        <div id="customTab" class="tab-content">
+            <div class="section">
+                <div class="input-group">
+                    <label for="customUrl">目标网页URL</label>
+                    <input type="url" id="customUrl" placeholder="https://example.com">
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">图片格式</div>
+                <div class="checkbox-group">
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="jpg2" checked>
+                        <label for="jpg2">JPG/JPEG</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="png2" checked>
+                        <label for="png2">PNG</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="gif2" checked>
+                        <label for="gif2">GIF</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="webp2" checked>
+                        <label for="webp2">WebP</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="svg2" checked>
+                        <label for="svg2">SVG</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="bmp2">
+                        <label for="bmp2">BMP</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="input-group">
+                    <label for="minSize2">最小尺寸 (像素)</label>
+                    <input type="text" id="minSize2" placeholder="例如: 100" value="0">
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="downloadCustom">
+                下载指定页面图片
+            </button>
+        </div>
+
+        <div id="networkTab" class="tab-content">
+            <div class="section">
+                <div class="section-title">Network监听模式</div>
+                <p style="font-size: 12px; color: #666; margin-bottom: 15px;">
+                    实时捕获当前页面的所有媒体网络请求（包括动态加载的资源）
+                </p>
+                
+                <!-- 资源类型选择 -->
+                <div class="section-title" style="margin-top: 10px;">监听资源类型</div>
+                <div class="checkbox-group">
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="networkTypeImage" checked>
+                        <label for="networkTypeImage">🖼️ 图片</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="networkTypeVideo">
+                        <label for="networkTypeVideo">🎬 视频</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="networkTypeAudio">
+                        <label for="networkTypeAudio">🎵 音频</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="networkTypeMedia">
+                        <label for="networkTypeMedia">📦 其他媒体</label>
+                    </div>
+                </div>
+
+                <!-- 图片格式过滤 -->
+                <div id="imageFormatFilter">
+                    <div class="section-title" style="margin-top: 10px;">图片格式过滤</div>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkJpg" checked>
+                            <label for="networkJpg">JPG</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkPng" checked>
+                            <label for="networkPng">PNG</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkGif" checked>
+                            <label for="networkGif">GIF</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkWebp" checked>
+                            <label for="networkWebp">WebP</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkSvg" checked>
+                            <label for="networkSvg">SVG</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkBmp">
+                            <label for="networkBmp">BMP</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkIco">
+                            <label for="networkIco">ICO</label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 视频格式过滤 -->
+                <div id="videoFormatFilter" style="display: none;">
+                    <div class="section-title" style="margin-top: 10px;">视频格式过滤</div>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkMp4" checked>
+                            <label for="networkMp4">MP4</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkWebm" checked>
+                            <label for="networkWebm">WebM</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkM3u8" checked>
+                            <label for="networkM3u8">M3U8/HLS</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkFlv">
+                            <label for="networkFlv">FLV</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkAvi">
+                            <label for="networkAvi">AVI</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkMov">
+                            <label for="networkMov">MOV</label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 音频格式过滤 -->
+                <div id="audioFormatFilter" style="display: none;">
+                    <div class="section-title" style="margin-top: 10px;">音频格式过滤</div>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkMp3" checked>
+                            <label for="networkMp3">MP3</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkWav" checked>
+                            <label for="networkWav">WAV</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkOgg" checked>
+                            <label for="networkOgg">OGG</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkAac">
+                            <label for="networkAac">AAC</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="networkFlac">
+                            <label for="networkFlac">FLAC</label>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 15px;">
+                    <button class="btn btn-primary" id="startMonitoring">
+                        🎯 开始监听
+                    </button>
+                    <button class="btn btn-secondary" id="stopMonitoring" style="display: none;">
+                        ⏸️ 停止监听
+                    </button>
+                    <button class="btn btn-secondary" id="clearMonitoring">
+                        🗑️ 清空列表
+                    </button>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">捕获的资源 (<span id="networkCount">0</span>)</div>
+                <div id="networkImageList" style="max-height: 300px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px;">
+                    <p style="text-align: center; color: #999; font-size: 12px;">暂无捕获的资源</p>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="downloadNetwork">
+                下载所有捕获的资源
+            </button>
+        </div>
+
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-value" id="foundCount">0</div>
+                <div class="stat-label">找到图片</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="downloadCount">0</div>
+                <div class="stat-label">已下载</div>
+            </div>
+        </div>
+
+        <div class="progress-bar" id="progressBar">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
+
+        <div class="status" id="status"></div>
+    </div>
+
+    <script src="popup.js"></script>
+    <script src="sidepanel-mode.js"></script>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>生成插件图标</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 50px;
+            background: #f0f0f0;
+        }
+        .icon-container {
+            display: flex;
+            gap: 30px;
+            margin-top: 30px;
+        }
+        .icon-box {
+            text-align: center;
+        }
+        canvas {
+            border: 2px solid #333;
+            border-radius: 8px;
+            background: white;
+        }
+        button {
+            margin-top: 20px;
+            padding: 12px 24px;
+            font-size: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        h1 {
+            color: #333;
+        }
+        p {
+            color: #666;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🖼️ 插件图标生成器</h1>
+    <p>右键点击图标 → 图片另存为 → 保存到 icons 文件夹</p>
+    
+    <div class="icon-container">
+        <div class="icon-box">
+            <canvas id="icon16" width="16" height="16"></canvas>
+            <p>icon16.png</p>
+        </div>
+        <div class="icon-box">
+            <canvas id="icon48" width="48" height="48"></canvas>
+            <p>icon48.png</p>
+        </div>
+        <div class="icon-box">
+            <canvas id="icon128" width="128" height="128"></canvas>
+            <p>icon128.png</p>
+        </div>
+    </div>
+    
+    <button onclick="downloadAll()">下载所有图标</button>
+
+    <script>
+        // 绘制图标
+        function drawIcon(canvas) {
+            const ctx = canvas.getContext('2d');
+            const size = canvas.width;
+            
+            // 背景渐变
+            const gradient = ctx.createLinearGradient(0, 0, size, size);
+            gradient.addColorStop(0, '#667eea');
+            gradient.addColorStop(1, '#764ba2');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, size, size);
+            
+            // 绘制图片框架
+            const padding = size * 0.2;
+            const frameSize = size - padding * 2;
+            
+            // 外框
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = size * 0.08;
+            ctx.strokeRect(padding, padding, frameSize, frameSize);
+            
+            // 山峰（简化的图片图标）
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.moveTo(padding + frameSize * 0.2, padding + frameSize * 0.8);
+            ctx.lineTo(padding + frameSize * 0.4, padding + frameSize * 0.4);
+            ctx.lineTo(padding + frameSize * 0.6, padding + frameSize * 0.6);
+            ctx.lineTo(padding + frameSize * 0.8, padding + frameSize * 0.3);
+            ctx.lineTo(padding + frameSize, padding + frameSize * 0.8);
+            ctx.closePath();
+            ctx.fill();
+            
+            // 太阳
+            ctx.beginPath();
+            ctx.arc(padding + frameSize * 0.75, padding + frameSize * 0.25, size * 0.08, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // 下载箭头（小尺寸时不绘制）
+            if (size >= 48) {
+                ctx.fillStyle = '#FFD700';
+                ctx.beginPath();
+                // 箭头主体
+                const arrowX = padding + frameSize * 0.85;
+                const arrowY = padding + frameSize * 0.7;
+                const arrowSize = size * 0.15;
+                
+                ctx.moveTo(arrowX, arrowY);
+                ctx.lineTo(arrowX - arrowSize * 0.4, arrowY - arrowSize * 0.4);
+                ctx.lineTo(arrowX - arrowSize * 0.2, arrowY - arrowSize * 0.4);
+                ctx.lineTo(arrowX - arrowSize * 0.2, arrowY - arrowSize * 0.8);
+                ctx.lineTo(arrowX + arrowSize * 0.2, arrowY - arrowSize * 0.8);
+                ctx.lineTo(arrowX + arrowSize * 0.2, arrowY - arrowSize * 0.4);
+                ctx.lineTo(arrowX + arrowSize * 0.4, arrowY - arrowSize * 0.4);
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+        
+        // 绘制所有尺寸的图标
+        drawIcon(document.getElementById('icon16'));
+        drawIcon(document.getElementById('icon48'));
+        drawIcon(document.getElementById('icon128'));
+        
+        // 下载图标
+        function downloadIcon(canvasId, filename) {
+            const canvas = document.getElementById(canvasId);
+            const link = document.createElement('a');
+            link.download = filename;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }
+        
+        // 下载所有图标
+        function downloadAll() {
+            downloadIcon('icon16', 'icon16.png');
+            setTimeout(() => downloadIcon('icon48', 'icon48.png'), 200);
+            setTimeout(() => downloadIcon('icon128', 'icon128.png'), 400);
+        }
+    </script>
+</body>
+</html>
